@@ -526,3 +526,58 @@ details.add-form[open] > summary { margin-bottom:12px; }
 .ask-actions .ask-danger { background:var(--bad); border-color:var(--bad); color:#fff; }
 .ask-actions .ask-danger:hover { background:#8f1c13; }
 @media print { .ask-backdrop { display:none !important; } }
+.ask-input { width:100%; margin:-8px 0 16px; text-align:left; }
+/* Policy & rules page */
+.policy-ex { width:auto; margin:6px 0 4px; }
+.policy-ex th, .policy-ex td { padding:4px 14px; text-align:center; }
+.policy-changes { margin:4px 0 10px; }
+/* Analytics: "Where this comes from" notes */
+details.source { margin-top:10px; border-top:1px solid var(--bd); padding-top:8px; font-size:13px; color:var(--mut); }
+details.source > summary { cursor:pointer; font-weight:600; color:var(--fg); }
+details.source ul { margin:6px 0 0; padding-left:20px; }
+details.source li { margin:2px 0; }
+/* Computation formulas page */
+.mono { font-family:ui-monospace, SFMono-Regular, Consolas, monospace; }
+.fx-current { display:grid; gap:4px; }
+.fx-text { font-size:16px; margin:2px 0; }
+.fx-form h4, .fx-form .row { margin-top:8px; }
+.fx-comps { margin:8px 0; }
+.fx-comps td, .fx-comps th { vertical-align:middle; }
+.fx-preview { margin:12px 0; }
+.fx-final { font-size:18px; }
+.fx-actions { margin-top:14px; border-top:1px solid var(--bd); padding-top:12px; }
+/* plain-word formula page */
+.fx-now { display:grid; gap:4px; margin:6px 0 12px; }
+.fx-sentence { font-size:18px; }
+.fx-choices { display:flex; flex-wrap:wrap; gap:6px 22px; }
+.fx-try { margin-top:14px; border-top:1px solid var(--bd); padding-top:4px; }
+.fx-compare { display:flex; align-items:stretch; gap:14px; flex-wrap:wrap; margin:8px 0; }
+.fx-compare > div:not(.fx-arrow) { display:grid; gap:2px; padding:10px 16px; border:1px solid var(--bd); border-radius:10px; min-width:200px; }
+.fx-compare b { font-size:26px; }
+.fx-arrow { align-self:center; font-size:22px; color:var(--mut); }
+/* comment analysis tags */
+.c-tags { display:inline-flex; flex-wrap:wrap; gap:4px; margin-left:6px; vertical-align:middle; }
+.c-topic { font-size:11.5px; padding:1px 7px; border-radius:999px; border:1px solid var(--bd); color:var(--mut); background:var(--card); }
+.comment-sum { margin:6px 0 10px; }
+@media print { .c-tags, .comment-sum { display:none !important; } }
+/* class QR codes */
+.qr-overlay { position:fixed; inset:0; z-index:90; background:var(--bg); overflow:auto; padding:16px; }
+.qr-bar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:12px; }
+.qr-bar label { flex:1; min-width:260px; }
+.qr-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:16px; }
+.qr-card { background:#fff; color:#000; border:2px solid #000; border-radius:12px; padding:16px; text-align:center; display:grid; gap:6px; justify-items:center; break-inside:avoid; page-break-inside:avoid; }
+.qr-logo { height:36px; width:auto; }
+.qr-title { font-size:20px; font-weight:800; color:var(--pri); }
+.qr-class { display:grid; gap:2px; font-size:15px; }
+.qr-class span { color:#444; }
+.qr-code { width:220px; height:220px; }
+.qr-code svg { width:100%; height:100%; }
+.qr-steps { text-align:left; margin:4px 0; padding-left:20px; font-size:13.5px; }
+.qr-foot { font-size:12.5px; color:#444; }
+.qr-link { font-size:10.5px; color:#777; word-break:break-all; }
+@media print {
+  body:has(.qr-overlay) .app { display:none !important; }
+  .qr-overlay { position:static; padding:0; background:#fff; }
+  .qr-grid { grid-template-columns:1fr 1fr; gap:12px; }
+  .qr-title { color:#b3001b; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+}

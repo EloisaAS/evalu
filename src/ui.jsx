@@ -137,7 +137,7 @@ export function ItemTable({ rows, criteria, categoryOf }) {
           ...(categoryOf ? [<tr key={'c' + ci} className="cat-row"><td>{roman[ci] || ci + 1}. {c.name}</td><td><b>{fmt(avg(c.rows))}</b></td><td colSpan={2} className="muted">category average</td></tr>] : []),
           ...c.rows.map((r, n) => (
             <tr key={r.criterionId} className={r.low ? 'low' : ''}>
-              <td>{categoryOf ? `${n + 1}. ` : ''}{text(r.criterionId)} {r.low && <Badge kind="overdue">below {LOW_ITEM.toFixed(2)}</Badge>}</td>
+              <td>{categoryOf ? `${n + 1}. ` : ''}{text(r.criterionId)} {r.low && <Badge kind="overdue">below {(r.cut ?? LOW_ITEM).toFixed(2)}</Badge>}</td>
               <td><b>{fmt(r.mean)}</b></td>
               <td>{r.n}</td>
               <td><span className="dist">{r.dist.map((x, i) => <span key={i} title={`${x} rated ${i + 1}`} style={{ flexGrow: x || 0.0001 }} className={`d${i + 1}`}>{x || ''}</span>)}</span></td>
@@ -248,16 +248,17 @@ let openAsk = null;
  * Ask before something important happens:  if (await ask('Delete section?', 'SEC-A1 will be removed.', { ok: 'Delete', danger: true })) …
  * Resolves true only when the person clicks the action button (Cancel, Esc or clicking outside = false).
  */
-export function ask(title, text = '', { ok = 'Yes, continue', danger = false } = {}) {
+export function ask(title, text = '', { ok = 'Yes, continue', danger = false, input = null } = {}) {
   return new Promise((resolve) => {
-    if (openAsk) openAsk({ title, text, ok, danger, resolve });
+    if (openAsk) openAsk({ title, text, ok, danger, input, resolve });
     else resolve(window.confirm(text ? `${title}\n\n${text}` : title)); // fallback if the dialog is not on the page
   });
 }
 /** Put once in the app; shows the dialog that ask() opens. */
 export function AskHost() {
   const [d, setD] = useState(null);
-  useEffect(() => { openAsk = setD; return () => { openAsk = null; }; }, []);
+  const [val, setVal] = useState('');
+  useEffect(() => { openAsk = (x) => { setVal(''); setD(x); }; return () => { openAsk = null; }; }, []);
   useEffect(() => {
     if (!d) return undefined;
     const key = (e) => { if (e.key === 'Escape') { d.resolve(false); setD(null); } };
@@ -265,16 +266,18 @@ export function AskHost() {
     return () => window.removeEventListener('keydown', key);
   }, [d]);
   if (!d) return null;
-  const done = (v) => { d.resolve(v); setD(null); };
+  // with a text box (input), the answer is the text typed, or false when cancelled
+  const done = (v) => { d.resolve(v && d.input != null ? val.trim() : v); setD(null); };
   return (
     <div className="ask-backdrop" onClick={() => done(false)}>
       <div className={`ask-box ${d.danger ? 'is-danger' : ''}`} role="alertdialog" aria-modal="true" aria-labelledby="ask-title" onClick={(e) => e.stopPropagation()}>
         <div className="ask-icon"><Icon name="alert" size={26} /></div>
         <h2 id="ask-title">{d.title}</h2>
         {d.text && <p>{d.text}</p>}
+        {d.input != null && <textarea className="ask-input" rows={3} autoFocus value={val} onChange={(e) => setVal(e.target.value)} placeholder={d.input} aria-label={d.input} />}
         <div className="ask-actions">
-          <button className="ghost" autoFocus onClick={() => done(false)}>Cancel</button>
-          <button className={d.danger ? 'ask-danger' : ''} onClick={() => done(true)}>{d.ok}</button>
+          <button className="ghost" autoFocus={d.input == null} onClick={() => done(false)}>Cancel</button>
+          <button className={d.danger ? 'ask-danger' : ''} disabled={d.input != null && val.trim().length < 5} onClick={() => done(true)}>{d.ok}</button>
         </div>
       </div>
     </div>

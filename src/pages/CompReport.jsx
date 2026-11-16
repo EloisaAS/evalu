@@ -6,7 +6,7 @@
 import { useState } from 'react';
 import { useApp } from '../lib/store';
 import {
-  GROUPS, computeTarget, deptName, interpretation, INTERPRETATION_TABLE, round2, targetsOf, targetType,
+  GROUPS, computeTarget, deptName, interpretation, bandTable, policyFor, DEFAULT_POLICY, round2, targetsOf, targetType,
   formOfTask, itemStats, itemCategory, responseScore, commentParts,
 } from '../lib/logic';
 import { Select, PrintButton, Empty } from '../ui';
@@ -60,7 +60,8 @@ export function CommentText({ c }) {
 export function CompSheet({ res, period, ctrl, db }) {
   const groups = Object.entries(res.groups);
   const ntp = isNtp(res.type);
-  const words = INTERPRETATION_TABLE.map(([range, i]) => [range, interpretation([4, 3.2, 2.7, 1][i], ntp).toUpperCase()]);
+  const pol = policyFor(db, period.id); // the rating bands this period was evaluated under
+  const words = bandTable(pol).map(([range, i]) => [range, interpretation([...pol.bands, 1][i], ntp, pol).toUpperCase()]);
   return (
     <div className="comp-sheet">
       <div className="comp-head">
@@ -76,7 +77,7 @@ export function CompSheet({ res, period, ctrl, db }) {
       </div>
       <table className="comp-table">
         <thead><tr>{groups.map(([g]) => <th key={g}>{columnFor(res.type, g)}</th>)}<th className="comp-final">FINAL RATING</th><th>RATING INTERPRETATION</th></tr></thead>
-        <tbody><tr>{groups.map(([g, x]) => <td key={g}>{two(x.score)}</td>)}<td className="comp-final">{two(res.final)}</td><td>{res.final == null ? 'NO VALID RESULT' : interpretation(res.final, ntp).toUpperCase()}</td></tr></tbody>
+        <tbody><tr>{groups.map(([g, x]) => <td key={g}>{two(x.score)}</td>)}<td className="comp-final">{two(res.final)}</td><td>{res.final == null ? 'NO VALID RESULT' : interpretation(res.final, ntp, pol).toUpperCase()}</td></tr></tbody>
       </table>
       <div className="comp-foot">
         <div>
@@ -147,7 +148,7 @@ export function EvalSheet({ db, period, res, sheet }) {
         <tbody>
           {named && cats.map((c, i) => <tr key={c.name}><td>{label(c, i)}</td><td>{two(weighted ? (c.mean ?? 0) * c.weight / 100 : c.mean)}</td></tr>)}
           <tr><td>OVER-ALL</td><td>{two(overall)}</td></tr>
-          <tr><td>INTERPRETATION</td><td>{overall == null ? '—' : interpretation(overall, isNtp(res.type)).toUpperCase()}</td></tr>
+          <tr><td>INTERPRETATION</td><td>{overall == null ? '—' : interpretation(overall, isNtp(res.type), policyFor(db, period.id)).toUpperCase()}</td></tr>
         </tbody>
       </table>
       {cats.map((c, i) => (
@@ -259,8 +260,9 @@ export function UbPrints({ periodId }) {
  * HRMC header, title and semester, a bordered table, the rating key and the "computer generated" line.
  * sections: [{ heading?, columns: [label...], rows: [[cell...] | { cat: 'I. ...' }], num?: true }]
  */
-export function SummarySheet({ title, period, info = [], sections, showKey = true }) {
-  const words = INTERPRETATION_TABLE.map(([range, i]) => [range, interpretation([4, 3.2, 2.7, 1][i], false).toUpperCase()]);
+export function SummarySheet({ title, period, info = [], sections, showKey = true, policy }) {
+  const pol = policy || DEFAULT_POLICY;
+  const words = bandTable(pol).map(([range, i]) => [range, interpretation([...pol.bands, 1][i], false, pol).toUpperCase()]);
   return (
     <div className="sum-sheet">
       <div className="comp-head">
@@ -301,5 +303,5 @@ export function SummarySheet({ title, period, info = [], sections, showKey = tru
   );
 }
 /** "OUTSTANDING", "SATISFACTORY"… for a score, or "—". */
-export const ratingWord = (x, ntp = false) => (x == null ? '—' : interpretation(x, ntp).toUpperCase());
+export const ratingWord = (x, ntp = false, policy = DEFAULT_POLICY) => (x == null ? '—' : interpretation(x, ntp, policy).toUpperCase());
 export const twoDp = two;

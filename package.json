@@ -9,9 +9,12 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "start": "node server/index.js",
-    "test": "node tests/logic.test.mjs && node tests/api.test.mjs"
+    "test": "node tests/logic.test.mjs && node tests/api.test.mjs && node tests/validation.test.mjs",
+    "test:validation": "node tests/validation.test.mjs",
+    "test:load": "node tests/load.test.mjs"
   },
   "dependencies": {
+    "qrcode": "1.5.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "recharts": "^3.10.1"

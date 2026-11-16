@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../lib/store';
+import { analyzeComment, summarizeComments, SENTIMENT_LABEL, TOPICS } from '../lib/comments';
 import {
   GROUPS, TARGET_TYPES, computeAll, computeTarget, canSeeAll, canSeeComments, canSeeDept, deptName, userById, sectionStats,
-  itemStats, formOfTask, itemCategory, hasFinal, pendingApprovals, isEvaluatee, stageAtLeast, targetsOf, commentParts, targetType,
+  itemStats, formOfTask, itemCategory, hasFinal, pendingApprovals, policyFor, approvalRuleText, formulaWords, howInWords, isEvaluatee, stageAtLeast, targetsOf, commentParts, targetType,
 } from '../lib/logic';
 import { Card, Badge, RuleNote, PeriodPicker, Select, Meter, Stat, Stats, Empty, Avatar, ItemTable, PrintButton, fmt, pct, newestFirst, usePages, ask } from '../ui';
 import { ReleaseSteps } from './Overview';
-import { UbPrints, CommentText, SummarySheet, ratingWord, twoDp, UbPacket } from './CompReport';
+import { UbPrints, CommentText, SummarySheet as Sheet, ratingWord as rw, twoDp, UbPacket } from './CompReport';
 
 export const STATUS_TEXT = { complete: 'Complete', reweighted: 'Complete (re-weighted)', incomplete: 'No valid result yet', 'weights-missing': 'Weights not set' };
 
@@ -25,23 +26,88 @@ function categoryLookup(db, tasks) {
   return f;
 }
 
+/** A comment as plain text (the two boxes of supervisors joined), for the comment analysis. */
+const plainComment = (c) => { const p = commentParts(c); return p ? (p.text ?? [p.plan, p.improve].filter(Boolean).join(' ')) : ''; };
+const TONE = { positive: 'completed', negative: 'overdue', mixed: 'pending', neutral: 'muted' };
+/** The tags of one comment: sentiment, suggestion and topics (made by evalU's word lists). */
+export function CommentTags({ c }) {
+  const a = analyzeComment(plainComment(c));
+  return (
+    <span className="c-tags">
+      <Badge kind={TONE[a.sentiment]}>{SENTIMENT_LABEL[a.sentiment]}</Badge>
+      {a.suggestion && <Badge kind="info">suggestion</Badge>}
+      {a.topics.map((k) => <span key={k} className="c-topic">{TOPICS[k].label}</span>)}
+    </span>
+  );
+}
+/** One line summing up many comments: how many positive/negative, and the topics mentioned most. */
+export function CommentSummary({ comments }) {
+  const sum = summarizeComments(comments.map(plainComment));
+  if (!sum.total) return null;
+  const extra = [sum.neutral ? `${sum.neutral} neutral` : '', sum.suggestions ? `${sum.suggestions} with a suggestion` : ''].filter(Boolean).join(' · ');
+  const top = sum.topics.slice(0, 3).map((t) => `${t.label} (${t.count}${t.negative ? `, ${t.negative} negative or mixed` : ''})`).join('; ');
+  return (
+    <div className="note comment-sum">
+      <b>Comment summary:</b> {sum.total} comment{sum.total > 1 ? 's' : ''}: {sum.positive} positive, {sum.negative} negative, {sum.mixed} mixed{extra ? ` · ${extra}` : ''}.
+      {top && <> Most mentioned: {top}.</>}
+      <div className="muted small">Tags are made by evalU's built-in word lists (English and Filipino) to help reading. They can miss sarcasm, so read the comments themselves. Nothing is sent outside evalU.</div>
+    </div>
+  );
+}
+
 /** FR14: verbatim comments grouped by source (Students, Dean, Program Chair…), never with a name. */
 export function CommentsBySource({ tasks }) {
   const by = {};
-  for (const t of tasks) if (t.response?.comment) (by[t.group] ||= []).push(t.response.comment);
-  if (!Object.keys(by).length) return null;
+  let hidden = 0;
+  for (const t of tasks) {
+    if (t.response?.comment) (by[t.group] ||= []).push(t.response.comment);
+    else if (t.response?.commentHidden) hidden++;
+  }
+  if (!Object.keys(by).length && !hidden) return null;
   return (
     <div className="comments">
       <h4>Comments (verbatim)</h4>
+      <CommentSummary comments={Object.values(by).flat()} />
       {Object.entries(by).map(([g, list]) => (
-        <div key={g}><b>From {GROUPS[g]}</b><ul>{list.map((c, i) => <li key={i}><CommentText c={c} /></li>)}</ul></div>
+        <div key={g}><b>From {GROUPS[g]}</b><ul>{list.map((c, i) => <li key={i}><CommentText c={c} /> <CommentTags c={c} /></li>)}</ul></div>
       ))}
+      {hidden > 0 && <p className="muted">{hidden} student comment(s) are hidden because too few students answered (see Policy &amp; rules).</p>}
       <p className="muted">Comments are shown exactly as written. The names of students are never shown.</p>
     </div>
   );
 }
 
 /** FR15: final breakdown + per-subject, dean and program chair reports with per-item rating distributions. */
+/** How a final rating was computed: the formula version, each group's share and contribution, and the steps. */
+/** One plain sentence about a missing group, e.g. "Program Chair has no rating yet, so only Students and Dean were used." */
+function missingSentence(res) {
+  const list = (gs) => gs.map((g) => GROUPS[g]).join(gs.length > 2 ? ', ' : ' and ');
+  const miss = list(res.missing || []);
+  const rest = list(Object.keys(res.groups).filter((g) => !res.missing.includes(g)));
+  const rule = res.formula?.missing || 'REWEIGHT';
+  if (rule === 'ZERO') return `${miss} has no rating yet, so it was counted as 0.`;
+  if (rule === 'SUBSTITUTE_MEAN') return `${miss} has no rating yet, so it was given the average of ${rest}.`;
+  return `${miss} has no rating yet, so only ${rest} ${res.missing.length === Object.keys(res.groups).length - 1 ? 'was' : 'were'} used.`;
+}
+
+export function Computation({ res }) {
+  const f = res.formula || {};
+  return (
+    <details className="source computation">
+      <summary>How this rating was computed</summary>
+      <p><b>{formulaWords({ method: f.method, components: res.breakdown?.map((b) => ({ group: b.group, weight: b.weight })) || [], expression: '' }, GROUPS)}</b></p>
+      {res.breakdown?.length > 0 && f.method !== 'CUSTOM' && (
+        <table>
+          <thead><tr><th>Group</th><th>Rating</th><th>Counts for</th><th>Points</th></tr></thead>
+          <tbody>{res.breakdown.map((b) => <tr key={b.group}><td>{GROUPS[b.group]}</td><td>{b.score == null ? <span className="muted">no rating</span> : b.score.toFixed(2)}</td><td>{b.share ? `${+(b.share * 100).toFixed(1)}%` : '—'}</td><td>{b.share ? b.contribution.toFixed(2) : '—'}</td></tr>)}
+            <tr className="cat-total"><td>Final rating</td><td /><td /><td><b>{res.final == null ? '—' : res.final.toFixed(2)}</b></td></tr></tbody>
+        </table>
+      )}
+      <p className="small muted">{howInWords(res)}{res.missing?.length > 0 && res.final != null ? ` · ${missingSentence(res)}` : ''} · {f.name}{f.version ? `, version ${f.version}` : ''}</p>
+    </details>
+  );
+}
+
 export function ResultCard({ res, db, periodId, own = false }) {
   const tasks = db.tasks.filter((t) => t.periodId === periodId && t.targetId === res.targetId);
   const validSecs = new Set(res.sections.filter((s) => s.valid).map((s) => s.section.id));
@@ -60,18 +126,19 @@ export function ResultCard({ res, db, periodId, own = false }) {
           <span className="muted">{res.status === 'complete' ? 'final score / 4' : res.status === 'reweighted' ? `final score / 4 · over ${res.basis}%` : STATUS_TEXT[res.status]}</span>
         </div>
       </div>
-      {res.status === 'reweighted' && <div className="note">Computed over <b>{res.basis}%</b> instead of {res.total}%: there is no valid result from {res.missing.map((g) => GROUPS[g]).join(', ')}, so {res.missing.length > 1 ? 'their weights are' : 'its weight is'} removed from the computation (HRMC rule). Rounded to two decimal places.</div>}
-      {res.status === 'incomplete' && <div className="note warn">No final score: none of the evaluator groups has a valid result yet.</div>}
+      {res.status === 'reweighted' && <div className="note">{missingSentence(res)}</div>}
+      {res.status === 'incomplete' && <div className="note warn">No final score yet: {res.steps?.[0] || 'none of the evaluator groups has a valid result yet.'}</div>}
       {res.status === 'weights-missing' && <div className="note warn">No final score yet. HR has not set the weight for: {res.missingW.map((g) => GROUPS[g]).join(', ')}.</div>}
       <div className="group-rows">
         {Object.entries(res.groups).map(([g, v]) => (
           <div key={g} className="meter-row big">
-            <span><b>{GROUPS[g]}</b> <span className="muted">{v.weight == null ? 'weight not set' : `counts ${v.weight}%`} · {v.responded}/{v.required} responses</span></span>
+            <span><b>{GROUPS[g]}</b> <span className="muted">{v.weight == null ? (res.formula?.method === 'CUSTOM' ? 'in the custom formula' : 'weight not set') : `counts ${v.weight}%`} · {v.responded}/{v.required} responses</span></span>
             <Meter value={v.score == null ? 0 : v.score / 4} tone="brand" />
             <b>{fmt(v.score)}</b>
           </div>
         ))}
       </div>
+      <Computation res={res} />
       {res.sections.length > 0 && (
         <table>
           <thead><tr><th>Class</th><th>Students answered</th><th>Result</th><th>Score</th></tr></thead>
@@ -91,7 +158,7 @@ export function ResultCard({ res, db, periodId, own = false }) {
           const ts = tasks.filter((t) => t.sectionId === s.section.id);
           return (
             <details key={s.section.id}><summary>Per-item results · {s.section.code} {s.section.subject} <span className="muted">({s.responded} students)</span></summary>
-              <ItemTable rows={itemStats(ts)} criteria={db.criteria} categoryOf={categoryLookup(db, ts)} />
+              <ItemTable rows={itemStats(ts, policyFor(db, periodId).lowItem)} criteria={db.criteria} categoryOf={categoryLookup(db, ts)} />
             </details>
           );
         })}
@@ -100,7 +167,7 @@ export function ResultCard({ res, db, periodId, own = false }) {
           if (!ts.some((t) => t.response)) return null;
           return (
             <details key={g}><summary>Per-item results · {GROUPS[g]} <span className="muted">({ts.filter((t) => t.response).length} evaluation{ts.filter((t) => t.response).length > 1 ? 's' : ''})</span></summary>
-              <ItemTable rows={itemStats(ts)} criteria={db.criteria} categoryOf={categoryLookup(db, ts)} />
+              <ItemTable rows={itemStats(ts, policyFor(db, periodId).lowItem)} criteria={db.criteria} categoryOf={categoryLookup(db, ts)} />
             </details>
           );
         })}
@@ -134,7 +201,7 @@ export function DeptSummary({ db, periodId, dept }) {
         return (
           <div key={g}>
             <h4>{GROUPS[g]} <span className="muted">· {ts.filter((t) => t.response).length} respondents</span></h4>
-            <ItemTable rows={itemStats(ts)} criteria={db.criteria} categoryOf={categoryLookup(db, ts)} />
+            <ItemTable rows={itemStats(ts, policyFor(db, periodId).lowItem)} criteria={db.criteria} categoryOf={categoryLookup(db, ts)} />
           </div>
         );
       })}
@@ -149,15 +216,20 @@ export function ApprovalPanel({ period }) {
   const approvals = period.approvals || [];
   const waiting = pendingApprovals(db, period);
   const mine = approvals.some((a) => a.userId === user.id);
+  const returned = period.rejections || [];
   return (
     <div className={`note ${waiting.length ? 'warn' : 'ok'} approval`}>
       <div>
-        <b>Vice President approval.</b>{' '}
+        <b>Vice President approval</b> <span className="muted">(needs {approvalRuleText(db, period)})</span>.{' '}
         {approvals.length ? `Approved by ${approvals.map((a) => userById(db, a.userId)?.name || 'a former account').join(', ')}.` : 'Not approved yet.'}{' '}
-        {period.releaseStage === 'dir' && (waiting.length ? `Waiting for: ${waiting.map((u) => u.name).join(', ')}.` : 'All approved: HR can release the results to faculty.')}
+        {period.releaseStage === 'dir' && (waiting.length ? `Waiting for: ${waiting.map((u) => u.name).join(', ')}.` : 'Enough approvals: HR can release the results to faculty.')}
+        {returned.length > 0 && <div className="small muted">Returned to HR before: {returned.map((r) => `${r.name} on ${new Date(r.at).toLocaleDateString()} ("${r.reason}")`).join('; ')}</div>}
       </div>
       {user.role === 'DIR' && period.releaseStage === 'dir' && !mine && (
-        <button onClick={async () => { if (await ask('Approve for release to faculty?', `You approve the results of ${period.name}. HR can then release them to faculty.`, { ok: 'Approve' })) act('approveRelease', { periodId: period.id }); }}>Approve for release to faculty</button>
+        <span className="row" style={{ margin: 0 }}>
+          <button className="ghost" onClick={async () => { const why = await ask('Return the results to HR?', `HR will be asked to check the results of ${period.name} and send them again. Write what needs checking.`, { ok: 'Return to HR', danger: true, input: 'e.g. The Dean’s rating for SIT looks incomplete' }); if (why) act('returnToHR', { periodId: period.id, reason: why }); }}>Return to HR</button>
+          <button onClick={async () => { if (await ask('Approve for release to faculty?', `You approve the results of ${period.name}. HR can then release them to faculty.`, { ok: 'Approve' })) act('approveRelease', { periodId: period.id }); }}>Approve for release to faculty</button>
+        </span>
       )}
     </div>
   );
@@ -243,14 +315,17 @@ function Comments({ periodId }) {
   const rows = db.tasks.filter((t) => t.periodId === periodId && t.response?.comment);
   if (!rows.length) return <p className="muted">No comments in this period.</p>;
   return (
+    <>
+    <CommentSummary comments={rows.map((t) => t.response.comment)} />
     <table>
-      <thead><tr><th>Evaluated</th><th>From</th><th>Comment (verbatim)</th></tr></thead>
+      <thead><tr><th>Evaluated</th><th>From</th><th>Comment (verbatim)</th><th>Tags</th></tr></thead>
       <tbody>
         {rows.map((t) => (
-          <tr key={t.id}><td>{userById(db, t.targetId).name}</td><td>{GROUPS[t.group]}</td><td><CommentText c={t.response.comment} /></td></tr>
+          <tr key={t.id}><td>{userById(db, t.targetId).name}</td><td>{GROUPS[t.group]}</td><td><CommentText c={t.response.comment} /></td><td><CommentTags c={t.response.comment} /></td></tr>
         ))}
       </tbody>
     </table>
+    </>
   );
 }
 
@@ -263,6 +338,9 @@ const commentWords = (c) => {
 
 /** The formal printout of a Reports tab (only on paper / PDF): UB header + a bordered table. */
 function FormalPrint({ tab, db, pid, period, all, secRows, bySubject, dept, selected }) {
+  const pol = policyFor(db, pid);
+  const ratingWord = (x, ntp = false) => rw(x, ntp, pol);
+  const SummarySheet = (props) => <Sheet policy={pol} {...props} />;
   const ntpOf = (r) => String(r.type).startsWith('NTP');
   const remark = (r) => (r.status === 'complete' ? 'Complete' : r.status === 'reweighted' ? `Computed over ${r.basis}%` : STATUS_TEXT[r.status]);
   let sheet = null;
@@ -300,7 +378,7 @@ function FormalPrint({ tab, db, pid, period, all, secRows, bySubject, dept, sele
       const kinds = [...new Set(ts.map((t) => TARGET_TYPES[targetType(db, userById(db, t.targetId))]))].join(', ');
       const catOf = categoryLookup(db, ts);
       const order = catOf?.order || {};
-      const stats = itemStats(ts).sort((a, b) => (order[a.criterionId] ?? 999) - (order[b.criterionId] ?? 999));
+      const stats = itemStats(ts, policyFor(db, pid).lowItem).sort((a, b) => (order[a.criterionId] ?? 999) - (order[b.criterionId] ?? 999));
       const rows = []; let last = null; let ci = 0; let n = 0;
       for (const x of stats) {
         const c = catOf?.(x.criterionId);
@@ -320,7 +398,7 @@ function FormalPrint({ tab, db, pid, period, all, secRows, bySubject, dept, sele
   } else if (tab === 'individual' && selected) {
     // one person: UB's own printouts (Comprehensive, Performance Evaluation sheets, Verbatim)
     const res = computeTarget(db, pid, selected);
-    return <div className="print-only ub-mine"><UbPacket db={db} period={period} res={res} ctrl={all.findIndex((r) => r.targetId === selected) + 1} what="all" /></div>;
+    return <div className="print-only"><div className="ub-mine"><UbPacket db={db} period={period} res={res} ctrl={all.findIndex((r) => r.targetId === selected) + 1} what="all" /></div></div>;
   }
   return sheet && <div className="print-only sum-print">{sheet}</div>;
 }

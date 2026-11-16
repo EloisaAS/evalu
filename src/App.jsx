@@ -7,8 +7,11 @@ import Tasks from './pages/Tasks';
 import { Periods, Assignments, Forms, Weights, Monitor, Classes, AuditLog } from './pages/HR';
 import Reports, { DeptResults } from './pages/Reports';
 import Analytics from './pages/Analytics';
+import Policy from './pages/Policy';
+import Formulas from './pages/Formulas';
 import { Notifications, MyResults } from './pages/Misc';
 import { Accounts, MyAccount, ForcedPasswordChange } from './pages/Accounts';
+import { QR_KEY } from './pages/ClassQr';
 import './index.css';
 
 function Login() {
@@ -82,6 +85,8 @@ function navFor(user) {
       ['classes', 'Class lists', 'list', <Classes />, 'Class sections and enrolment from the Registrar / ARC'],
       ['forms', 'Forms', 'form', <Forms />, 'The criteria and questions on each evaluation form'],
       ['weights', 'Weights', 'scale', <Weights />, 'How much each evaluator group counts toward the final score'],
+      ['formulas', 'Rating formula', 'scale', <Formulas />, 'How the final rating is computed. Changes need VP approval.'],
+      ['policy', 'Policy & rules', 'form', <Policy />, 'The rules that turn answers into ratings, with every change kept as a version'],
       ['accounts', 'Accounts', 'users', <Accounts />, 'Create and manage the people who can sign in'],
       ['reports', 'Reports', 'report', <Reports />, 'Final scores and results by person, class and subject'],
       ['analytics', 'Analytics', 'trend', <Analytics />, 'Trends, department comparisons and low-rated items'],
@@ -92,6 +97,7 @@ function navFor(user) {
       ['home', 'Overview', 'home', <VpOverview />, 'A summary of the results released to you'],
       ['reports', 'Reports', 'report', <Reports />, 'Final scores and results by person, class and subject'],
       ['analytics', 'Analytics', 'trend', <Analytics />, 'Trends, department comparisons and low-rated items'],
+      ['formulas', 'Formula approvals', 'scale', <Formulas />, 'Rating formulas waiting for your approval'],
     );
   } else {
     // Clinical Instructors are evaluated but don't evaluate anyone
@@ -179,6 +185,12 @@ function Shell() {
     </NavContext.Provider>
   );
 }
+
+// A class QR code opens evalU with ?evaluate=<class>. Remember it until the student has signed in.
+try {
+  const scanned = new URLSearchParams(window.location.search).get('evaluate');
+  if (scanned) { sessionStorage.setItem(QR_KEY, scanned); window.history.replaceState(null, '', window.location.pathname); }
+} catch { /* storage blocked: the student opens the evaluation from the list */ }
 
 export default function App() {
   return <AppProvider><Shell /><AskHost /></AppProvider>;

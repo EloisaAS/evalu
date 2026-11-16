@@ -6,6 +6,7 @@ import {
   GROUPS, TARGET_TYPES, STAGES, ROLES, POSITIONS, needsDept, uid, userById, periodById, targetType, evaluatorGroups,
   instrumentFor, formForTask, formUsed, effectiveWeights, generateTasks, runThresholdCheck, participationAlerts, sendReminders,
   isInstitutionalEmail, INSTITUTION_DOMAIN, notify, directors, pendingApprovals, resultHeads, hrUsers, isEvaluatee, isTeacher, isNursingDept, stageAtLeast, UB_DEPARTMENTS, missingUbDepartments, MAX_RATING, CLASS_TYPES,
+  currentPolicy, formulaKey, activeFormula, formulaSnapshot, formGroups, validateFormula, computeAll, METHODS, AGGREGATIONS, MISSING_RULES, ROUNDING_METHODS,
 } from '../src/lib/logic.js';
 import { HttpError } from './http.js';
 import { encryptText, decryptText, hashPassword, verifyPassword } from './secrets.js';
@@ -137,6 +138,42 @@ function sectionFields(db, { code, subject, facultyId }, editingId = null) {
 }
 
 // ---------- notifications for the release steps ----------
+/**
+ * When a period closes, every final result is stored with the formula version, the breakdown and the steps
+ * used to compute it. Later changes to formulas, policies or the program cannot silently change them.
+ */
+function storeResults(db, p) {
+  const at = new Date().toISOString();
+  db.results = (db.results || []).filter((r) => r.periodId !== p.id);
+  for (const r of computeAll(db, p.id)) {
+    db.results.push({ periodId: p.id, targetId: r.targetId, data: {
+      final: r.final, status: r.status, basis: r.basis, formula: r.formula, steps: r.steps,
+      groups: Object.fromEntries(Object.entries(r.groups).map(([g, x]) => [g, { score: x.score, weight: x.weight, responded: x.responded, required: x.required }])),
+      breakdown: r.breakdown, computedAt: at,
+    } });
+  }
+}
+
+/** Keep only the parts of a formula the engine understands (never code, never extra fields). */
+function cleanFormula(c = {}) {
+  const pick = (v, list, def) => (typeof v === 'string' && Object.hasOwn(list, v) ? v : def);
+  return {
+    name: text(c.name || 'Untitled formula', 'Formula name', 120),
+    method: pick(c.method, METHODS, ''), // a blank formula leaves the choice to HR
+    components: (Array.isArray(c.components) ? c.components : []).slice(0, 12).map((x) => ({
+      group: Object.hasOwn(GROUPS, x?.group) ? x.group : fail('Unknown evaluator group.'),
+      weight: x.weight === '' || x.weight == null ? null : number(x.weight, 'Weight', 0, 100),
+      aggregation: pick(x.aggregation, AGGREGATIONS, x.group === 'ST' ? 'SECTION_AVERAGE' : 'AVERAGE'),
+    })),
+    expression: typeof c.expression === 'string' ? c.expression.slice(0, 300) : '',
+    missing: pick(c.missing, MISSING_RULES, ''),
+    minGroups: Math.max(1, Math.min(12, Number.parseInt(c.minGroups, 10) || 1)),
+    rounding: { decimals: Math.max(0, Math.min(4, Number.parseInt(c.rounding?.decimals, 10) || 0)), method: pick(c.rounding?.method, ROUNDING_METHODS, 'HALF_UP') },
+  };
+}
+const formulaRec = (db, id) => (db.formulas || []).find((f) => f.id === id) || fail('Formula not found.', 404);
+const logFormula = (f, user, action, note = '') => { (f.meta.log ||= []).push({ at: new Date().toISOString(), by: user.name, byId: user.id, action, note }); };
+
 function notifyRelease(db, p, stage) {
   if (stage === 'dir') {
     for (const d of directors(db)) notify(db, { key: `rel|${p.id}|dir|${d.id}|${Date.now()}`, userId: d.id, kind: 'release', text: `Results for ${p.name} are ready for your review. Please review them under Reports and approve them for release to faculty.` });
@@ -318,8 +355,13 @@ export const actions = {
    */
   importClassList: {
     roles: HR,
-    async run(db, { csv, dept }) {
+    async run(db0, { csv, dept, preview }) {
+      // preview: check the whole file on a copy and report what would happen; nothing is saved
+      const db = preview ? structuredClone(db0) : db0;
       if (typeof csv !== 'string' || !csv.trim()) fail('Paste or choose the class list first.');
+      const seenRows = new Map(); // section + student -> first row number, to find duplicate rows
+      let duplicates = 0, existingStudents = 0, rowsRead = 0;
+      const warnings = [];
       const listDept = dept ? find(db.departments, dept, 'Department') : null; // where new teachers (and so their classes) go
       if (csv.length > 2000000) fail('The class list is too long. Import it in parts (for example one department at a time).');
       const errors = [];
@@ -331,6 +373,7 @@ export const actions = {
         let cells = line.split(/[,\t;]/).map((c) => c.trim().replace(/^"|"$/g, '').trim());
         if (!line.trim() || (i === 0 && /section/i.test(cells[0]))) continue; // blank or header row
         const n = i + 1;
+        rowsRead++;
         // 7 columns: the teacher's name comes before the teacher's email
         let tname = '';
         if (cells.length >= 7) { tname = cells[2]; cells = [cells[0], cells[1], ...cells.slice(3)]; }
@@ -372,14 +415,23 @@ export const actions = {
         }
         if (st.role !== 'ST') { errors.push(`Row ${n}: ${st.name} is not a student account.`); continue; }
         if (st.dept !== s.dept) { errors.push(`Row ${n}: ${st.name} is not in the same department as ${code}.`); continue; }
+        const rowKey = s.id + '|' + st.id;
+        if (seenRows.has(rowKey)) { duplicates++; warnings.push(`Row ${n}: duplicate of row ${seenRows.get(rowKey)} (${st.name} in ${code}); counted once.`); continue; }
+        seenRows.set(rowKey, n);
+        if (!fresh.includes(st)) existingStudents++;
         if (!s.studentIds.includes(st.id)) { s.studentIds.push(st.id); enrolled++; }
+      }
+      if (preview) {
+        return { preview: true, rows: rowsRead, created, enrolled, accounts: fresh.length, teachers: freshTeachers.length, existingStudents, duplicates,
+          warnings: warnings.slice(0, 50), errors: errors.slice(0, 50), errorCount: errors.length,
+          newClasses: db.sections.filter((x) => !db0.sections.some((y) => y.id === x.id)).map((x) => `${x.code} · ${x.subject} (${x.studentIds.length} students)`).slice(0, 50) };
       }
       // first password = the student ID / the teacher's username (they must change it at the first sign-in)
       const all = [...freshTeachers, ...fresh];
       for (let i = 0; i < all.length; i += 16) {
         await Promise.all(all.slice(i, i + 16).map(async (u) => { u.passwordHash = await hashPassword(u.username); u.tempPassword = encryptText(u.username); }));
       }
-      return { created, enrolled, accounts: fresh.length, teachers: freshTeachers.length, errors: errors.slice(0, 50), errorCount: errors.length };
+      return { created, enrolled, accounts: fresh.length, teachers: freshTeachers.length, existingStudents, duplicates, warnings: warnings.slice(0, 50), errors: errors.slice(0, 50), errorCount: errors.length };
     },
   },
 
@@ -391,8 +443,10 @@ export const actions = {
       const p = {
         id: uid('p'), name: text(name, 'Period name', 120), deadline: date(deadline), status: 'open', releaseStage: 'hr', thresholdChecked: false,
         rules: clone(db.rules),   // NFR8: the weights in force for this period
+        policy: currentPolicy(db), // the policy version in force for this period (threshold, bands, approvals…)
+        formulas: Object.fromEntries((db.formulas || []).filter((f) => f.status === 'active').map((f) => [f.key, formulaSnapshot(f)])), // the formula versions this period is computed with
         depts: list.length ? list : null, // FR8: one department, several, or all
-        approvals: [],
+        approvals: [], rejections: [],
       };
       db.periods.push(p);
       return { id: p.id };
@@ -410,6 +464,8 @@ export const actions = {
       const flagged = runThresholdCheck(db, p.id); // FR11/FR12: exclude classes below half + 1, notify everyone concerned
       p.status = 'closed';
       p.rules ||= clone(db.rules);
+      p.policy ||= currentPolicy(db); // the policy this period is computed with from now on
+      storeResults(db, p);
       return { flagged };
     },
   },
@@ -429,6 +485,7 @@ export const actions = {
       if (p.releaseStage !== 'hr') fail('Withdraw the released results first.', 409);
       p.status = 'open';
       p.thresholdChecked = false;
+      db.results = (db.results || []).filter((r) => r.periodId !== p.id); // computed again when it is closed
     },
   },
   releaseNext: {
@@ -455,6 +512,21 @@ export const actions = {
       if (i <= 0) fail('Results are not released yet.', 409);
       p.releaseStage = STAGES[i - 1];
       if (p.releaseStage === 'hr') p.approvals = []; // results must be reviewed again
+    },
+  },
+  /** FR17 governance: a VP sends the results back to HR with a reason instead of approving them. */
+  returnToHR: {
+    roles: DIR,
+    run(db, { periodId, reason }, user) {
+      const p = period(db, periodId);
+      if (user.position !== 'vp') fail('Only the Vice Presidents review results.', 403);
+      if (p.releaseStage !== 'dir') fail('These results are not waiting for your review.', 409);
+      const why = text(reason, 'Reason', 1000);
+      if (why.length < 5) fail('Write a short reason so HR knows what to check.');
+      p.releaseStage = 'hr';
+      p.approvals = []; // after HR fixes it, every approval is given again
+      (p.rejections ||= []).push({ userId: user.id, name: user.name, at: new Date().toISOString(), reason: why });
+      for (const h of hrUsers(db)) notify(db, { key: `ret|${p.id}|${user.id}|${Date.now()}|${h.id}`, userId: h.id, kind: 'release', text: `${user.name} returned the results of ${p.name} to HR: "${why}". Check them and send them for approval again.` });
     },
   },
   /** FR17: a Vice President approves the results of a period for release to faculty. */
@@ -633,13 +705,151 @@ export const actions = {
     roles: HR,
     run(db, { targetType: tt, group, weight }) {
       if (!(tt in db.rules) || !(group in db.rules[tt])) fail('Unknown evaluated role or evaluator group.');
+      const af = activeFormula(db, tt);
+      if (af) fail(`${TARGET_TYPES[tt]} is computed with the formula "${af.config.name}" version ${af.version}. Change it under Rating formula (a new version needs approval).`, 409);
       const w = weight === null || weight === '' ? null : number(weight, 'Weight', 0, 100);
+      const from = db.rules[tt][group];
       db.rules[tt][group] = w;
       // NFR8: closed periods keep the weights they were computed with; open ones follow the change
       for (const p of db.periods.filter((x) => x.status === 'open')) {
         p.rules ||= clone(db.rules);
         (p.rules[tt] ||= {})[group] = w;
       }
+      return { from, to: w };
+    },
+  },
+
+  /* ---------- Rating formula (dynamic computation engine) ---------- */
+  // A formula version goes: draft (HR edits) → pending (submitted with the committee's basis) →
+  // approved by a VP (or rejected, back to HR) → active (HR activates it; the old version is archived).
+  // Approved versions never change: a change is always a new version. HR only encodes approved policy.
+  saveFormulaDraft: {
+    roles: HR,
+    run(db, { id, targetType: tt, dept, config }, user) {
+      db.formulas ||= [];
+      const clean = cleanFormula(config);
+      if (id) {
+        const f = formulaRec(db, id);
+        if (!['draft', 'rejected'].includes(f.status)) fail('Only a draft can be edited. Make a new version instead.', 409);
+        f.config = clean; f.status = 'draft';
+        logFormula(f, user, 'edited');
+        return { id: f.id, version: f.version };
+      }
+      if (!Object.hasOwn(TARGET_TYPES, tt)) fail('Choose who is evaluated.');
+      const d = dept ? find(db.departments, dept, 'Department').id : null;
+      const key = formulaKey(tt, d);
+      if (db.formulas.some((f) => f.key === key && ['draft', 'pending', 'rejected', 'approved'].includes(f.status))) fail('This category already has a version in progress. Finish or delete it first.', 409);
+      const version = Math.max(0, ...db.formulas.filter((f) => f.key === key).map((f) => f.version)) + 1;
+      const f = { id: uid('fx'), key, targetType: tt, dept: d, version, status: 'draft', config: clean, meta: { createdBy: user.name, createdAt: new Date().toISOString(), log: [] } };
+      logFormula(f, user, 'created');
+      db.formulas.push(f);
+      return { id: f.id, version };
+    },
+  },
+  deleteFormulaDraft: {
+    roles: HR,
+    run(db, { id }, user) {
+      const f = formulaRec(db, id);
+      if (!['draft', 'rejected'].includes(f.status)) fail('Only drafts can be deleted; approved versions are kept for the records.', 409);
+      db.formulas = db.formulas.filter((x) => x.id !== id);
+      return { deleted: `${f.config.name} v${f.version}`, by: user.name };
+    },
+  },
+  submitFormula: {
+    roles: HR,
+    run(db, { id, basis }, user) {
+      const f = formulaRec(db, id);
+      if (f.status !== 'draft') fail('Only a draft can be submitted.', 409);
+      const errs = validateFormula(f.config, { allowedGroups: formGroups(db, f.targetType), groupNames: GROUPS });
+      if (errs.length) fail(`Fix the formula first: ${errs.join(' ')}`);
+      const why = text(basis, 'Basis (committee decision or memo)', 300);
+      if (why.length < 5) fail('Write the basis of this formula, e.g. "Evaluation Tool Committee resolution no. 3, s. 2026".');
+      f.status = 'pending'; f.meta.basis = why; f.meta.submittedBy = user.name; f.meta.submittedAt = new Date().toISOString();
+      logFormula(f, user, 'submitted for approval', why);
+      for (const v of directors(db)) notify(db, { key: `fx|${f.id}|sub|${v.id}`, userId: v.id, kind: 'release', text: `A computation formula is waiting for your approval: ${f.config.name} (version ${f.version}). Basis: ${why}.` });
+    },
+  },
+  approveFormula: {
+    roles: DIR,
+    run(db, { id, note }, user) {
+      if (user.position !== 'vp') fail('Only the Vice Presidents approve formulas.', 403);
+      const f = formulaRec(db, id);
+      if (f.status !== 'pending') fail('This formula is not waiting for approval.', 409);
+      f.status = 'approved'; f.meta.approvedBy = user.name; f.meta.approvedAt = new Date().toISOString();
+      logFormula(f, user, 'approved', typeof note === 'string' ? note.slice(0, 300) : '');
+      for (const h of hrUsers(db)) notify(db, { key: `fx|${f.id}|ok|${h.id}`, userId: h.id, kind: 'release', text: `${user.name} approved the formula ${f.config.name} (version ${f.version}). You can activate it under Rating formula.` });
+    },
+  },
+  rejectFormula: {
+    roles: DIR,
+    run(db, { id, reason }, user) {
+      if (user.position !== 'vp') fail('Only the Vice Presidents review formulas.', 403);
+      const f = formulaRec(db, id);
+      if (f.status !== 'pending') fail('This formula is not waiting for approval.', 409);
+      const why = text(reason, 'Reason', 500);
+      f.status = 'rejected'; f.meta.rejectedBy = user.name; f.meta.rejectReason = why;
+      logFormula(f, user, 'returned to HR', why);
+      for (const h of hrUsers(db)) notify(db, { key: `fx|${f.id}|no|${Date.now()}|${h.id}`, userId: h.id, kind: 'release', text: `${user.name} returned the formula ${f.config.name} (version ${f.version}): "${why}".` });
+    },
+  },
+  activateFormula: {
+    roles: HR,
+    run(db, { id }, user) {
+      const f = formulaRec(db, id);
+      if (f.status !== 'approved') fail('Only an approved formula can be activated.', 409);
+      for (const old of db.formulas.filter((x) => x.key === f.key && x.status === 'active')) { old.status = 'archived'; logFormula(old, user, 'archived', `replaced by version ${f.version}`); }
+      f.status = 'active'; f.meta.activatedBy = user.name; f.meta.activatedAt = new Date().toISOString();
+      logFormula(f, user, 'activated');
+      const snap = formulaSnapshot(f);
+      const weights = Object.fromEntries(f.config.components.map((c) => [c.group, f.config.method === 'WEIGHTED_AVERAGE' ? c.weight : null]));
+      if (!f.dept) db.rules[f.targetType] = weights; // the groups that get tasks (and what the Weights page shows)
+      // open periods take the new version only while nobody in that category has been evaluated yet,
+      // so results already collected are never computed differently without notice
+      let applied = 0, kept = 0;
+      for (const p of db.periods.filter((x) => x.status === 'open')) {
+        const inCat = (t) => { const u = userById(db, t.targetId); return targetType(db, u) === f.targetType && (!f.dept || u?.dept === f.dept); };
+        if (db.tasks.some((t) => t.periodId === p.id && t.response && inCat(t))) { kept++; continue; }
+        p.formulas = { ...(p.formulas || {}), [f.key]: snap };
+        if (!f.dept) { p.rules ||= clone(db.rules); p.rules[f.targetType] = clone(weights); }
+        applied++;
+      }
+      return { version: f.version, applied, kept };
+    },
+  },
+
+  /* ---------- HR: evaluation policy (threshold, rating bands, rounding, approvals) ---------- */
+  /**
+   * Save a new policy version. A reason is required, every version is kept, closed periods keep the
+   * version they were computed with, and open periods follow the change (like the group weights, NFR8).
+   */
+  setPolicy: {
+    roles: HR,
+    run(db, { policy: p = {}, reason }, user) {
+      const why = text(reason, 'Reason for the change', 500);
+      if (why.length < 5) fail('Write a short reason for the change (for example, "HRMC memo of 2026-11-20").');
+      const bands = Array.isArray(p.bands) ? p.bands.map((b, i) => number(b, ['Outstanding', 'Satisfactory', 'Fair'][i] + ' starts at', 1, 4)) : fail('Enter the rating bands.');
+      if (bands.length !== 3 || !(bands[0] > bands[1] && bands[1] > bands[2])) fail('The rating bands must go down: Outstanding > Satisfactory > Fair.');
+      const next = {
+        participationPercent: number(p.participationPercent, 'Participation %', 1, 100),
+        participationPlusOne: !!p.participationPlusOne,
+        bands,
+        lowItem: number(p.lowItem, 'Low item cutoff', 1, 4),
+        decimals: number(p.decimals, 'Decimal places', 0, 4),
+        missingGroup: ['reweight', 'incomplete'].includes(p.missingGroup) ? p.missingGroup : fail('Choose what happens when an evaluator group is missing.'),
+        minAnonymity: number(p.minAnonymity, 'Minimum students for comments', 0, 50),
+        approvalMode: ['all', 'any', 'count'].includes(p.approvalMode) ? p.approvalMode : fail('Choose how many VPs must approve.'),
+        approvalCount: number(p.approvalCount ?? 1, 'Number of VPs', 1, 20),
+      };
+      const before = currentPolicy(db);
+      const changed = Object.keys(next).filter((k) => JSON.stringify(next[k]) !== JSON.stringify(before[k])); // (the version number itself is not a rule)
+      if (!changed.length) fail('Nothing was changed.', 409);
+      // closed periods without their own copy keep the rules they were evaluated under
+      for (const per of db.periods) if (per.status !== 'open' && !per.policy) per.policy = before;
+      db.policies ||= [];
+      const version = (db.policies.at(-1)?.version || 0) + 1;
+      db.policies.push({ version, policy: next, at: new Date().toISOString(), byId: user.id, byName: user.name, reason: why });
+      for (const per of db.periods.filter((x) => x.status === 'open')) per.policy = { ...clone(next), version };
+      return { version, changed: changed.map((k) => ({ field: k, from: before[k], to: next[k] })) };
     },
   },
 
@@ -747,6 +957,10 @@ export const actions = {
 /** FR20: a readable line for the audit log (never includes passwords or answers). */
 export function describeAction(name, args, db, result) {
   if (name === 'changePassword') return 'Changed own password';
+  // before → after values, so every rule change can be traced
+  if (name === 'setPolicy' && result?.changed) return `policy version ${result.version}: ${result.changed.map((c) => `${c.field} ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`).join('; ')} · reason: ${args.reason}`;
+  if (/Formula/.test(name)) { const f = (db.formulas || []).find((x) => x.id === (args.id || result?.id)); const tag = f ? `formula: ${f.config.name} v${f.version} (${TARGET_TYPES[f.targetType]}${f.dept ? ', ' + f.dept : ''}) · status: ${f.status}` : (result?.deleted ? `formula: ${result.deleted}` : 'formula'); return [tag, args.basis && `basis: ${args.basis}`, args.reason && `reason: ${args.reason}`, result?.applied != null && `applied to ${result.applied} open period(s), ${result.kept} kept the previous version`].filter(Boolean).join(' · '); }
+  if (name === 'returnToHR') { const per = periodById(db, args.periodId); return `period: ${per?.name} · returned to HR · reason: ${args.reason}`; }
   const parts = [];
   const a = args || {};
   const p = a.periodId && periodById(db, a.periodId);
@@ -754,12 +968,13 @@ export function describeAction(name, args, db, result) {
   for (const k of ['userId', 'targetId', 'evaluatorId']) { const u = a[k] && userById(db, a[k]); if (u) parts.push(`${k.replace('Id', '')}: ${u.name}`); }
   if (a.instrumentId) { const i = db.instruments.find((x) => x.id === a.instrumentId); if (i) parts.push(`form: ${TARGET_TYPES[i.targetType]} ← ${GROUPS[i.group]} v${i.version || 1}`); }
   if (a.targetType && a.group) parts.push(`${TARGET_TYPES[a.targetType] || a.targetType} ← ${GROUPS[a.group] || a.group}`);
-  if ('weight' in a) parts.push(`weight: ${a.weight ?? 'blank'}`);
+  if ('weight' in a) parts.push(result && 'from' in result ? `weight: ${result.from ?? 'blank'} → ${result.to ?? 'blank'}` : `weight: ${a.weight ?? 'blank'}`);
   if (a.taskId) { const t = db.tasks.find((x) => x.id === a.taskId); const tg = t && userById(db, t.targetId); if (tg) parts.push(`evaluation of ${tg.name}`); }
   if (a.office) parts.push(`requested by: ${a.office}`);
   if (a.name && name !== 'changePassword') parts.push(`name: ${a.name}`);
   if (a.code) parts.push(`section: ${a.code}`);
   if (result?.stage) parts.push(`now: ${result.stage}`);
   if (typeof result?.added === 'number') parts.push(`${result.added} added`);
+  if (name === 'importClassList' && result) parts.push(result.preview ? `checked a class list (not saved): ${result.rows} rows, ${result.errorCount} error(s), ${result.duplicates} duplicate(s)` : `imported a class list: ${result.created} class(es), ${result.accounts} new student(s), ${result.enrolled} enrolment(s), ${result.errorCount} row(s) skipped`);
   return parts.join(' · ');
 }

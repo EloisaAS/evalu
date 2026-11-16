@@ -1,6 +1,6 @@
 // Brings a database made by an earlier version of evalU up to date, without losing data.
 // Runs once at start-up (see seed.js). Safe to run many times: it only fills in what is missing.
-import { formForTask, uid, UB_DEPARTMENTS } from '../src/lib/logic.js';
+import { formForTask, uid, UB_DEPARTMENTS, DEFAULT_POLICY } from '../src/lib/logic.js';
 import { installUbForms, UB_FORM_MARK } from '../src/lib/ubInstall.js';
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -24,9 +24,11 @@ export function upgradeData(db) {
     set(u, 'email', e);
   }
 
+  // HR's own formula always wins: these one-time repairs never touch a category that has a formula
+  const hrDecided = (tt) => (db.formulas || []).some((f) => f.targetType === tt && f.status !== 'draft');
   // Table 6: Basic Education 40/20/20/20 (earlier versions left it blank)
   const be = db.rules.BASICED_TEACHER;
-  if (be && Object.values(be).every((w) => w == null)) set(db.rules, 'BASICED_TEACHER', { ST: 40, PRIN: 20, APRIN: 20, SHEAD: 20 });
+  if (be && !hrDecided('BASICED_TEACHER') && Object.values(be).every((w) => w == null)) set(db.rules, 'BASICED_TEACHER', { ST: 40, PRIN: 20, APRIN: 20, SHEAD: 20 });
   // Table 6: non-teaching personnel, head and staff evaluate each other
   if (!db.rules.NTP_STAFF) set(db.rules, 'NTP_STAFF', { NTPHEAD: 100 });
   if (!db.rules.NTP_HEAD) set(db.rules, 'NTP_HEAD', { NTPSTAFF: 100 });
@@ -57,7 +59,7 @@ export function upgradeData(db) {
   // Put back the Table 6 weights and the forms it retired (HR can't remove a group or retire a form
   // without making a newer version, so these can only come from that version).
   const cfr = db.rules.COLLEGE_FACULTY;
-  if (cfr && !('CHAIR' in cfr) && cfr.ST === 50 && cfr.DEAN === 50) set(db.rules, 'COLLEGE_FACULTY', { ST: 40, DEAN: 40, CHAIR: 20 });
+  if (cfr && !hrDecided('COLLEGE_FACULTY') && !('CHAIR' in cfr) && cfr.ST === 50 && cfr.DEAN === 50) set(db.rules, 'COLLEGE_FACULTY', { ST: 40, DEAN: 40, CHAIR: 20 });
   if (!db.rules.DEAN) set(db.rules, 'DEAN', { CHAIR: null, SEC: null, FAC: null });
   const formKey = (i) => `${i.targetType}|${i.group}|${i.dept || ''}`;
   const activeKeys = new Set(db.instruments.filter((i) => i.active !== false).map(formKey));
@@ -81,6 +83,9 @@ export function upgradeData(db) {
       }
     }
     if (!Array.isArray(p.approvals)) set(p, 'approvals', []);
+    // policy versions: a period evaluated before policies existed keeps UB's default rules
+    if (!p.policy && p.status !== 'open') set(p, 'policy', { ...DEFAULT_POLICY });
+    if (!Array.isArray(p.rejections)) set(p, 'rejections', []);
   }
 
   // FR17: only the Vice Presidents approve results; Director accounts are switched off (kept for the records)

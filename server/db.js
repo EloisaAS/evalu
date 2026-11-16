@@ -5,6 +5,7 @@
 // shaped exactly like the old browser data. Every change goes through save(),
 // which writes only the rows that actually changed, inside one transaction.
 import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './config.js';
@@ -108,6 +109,17 @@ CREATE TABLE IF NOT EXISTS audit_log (                                    -- FR2
   id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, user_id TEXT, user_name TEXT,
   action TEXT NOT NULL, detail TEXT
 );
+CREATE TABLE IF NOT EXISTS policies (                                     -- evaluation policy versions HR saved (threshold, bands, approvals…)
+  version INTEGER PRIMARY KEY, data TEXT NOT NULL, at TEXT NOT NULL, by_id TEXT, by_name TEXT, reason TEXT
+);
+CREATE TABLE IF NOT EXISTS formulas (                                     -- computation formulas, one row per version (draft → approved → active → archived)
+  id TEXT PRIMARY KEY, key TEXT NOT NULL, target_type TEXT NOT NULL, dept TEXT, version INTEGER NOT NULL,
+  status TEXT NOT NULL, config TEXT NOT NULL, meta TEXT                   -- config: the rules the engine runs; meta: who/when/why + history
+);
+CREATE TABLE IF NOT EXISTS results (                                      -- final results stored when a period is closed, with the formula used
+  period_id TEXT NOT NULL REFERENCES periods(id) ON DELETE CASCADE, target_id TEXT NOT NULL, data TEXT NOT NULL,
+  PRIMARY KEY (period_id, target_id)
+);
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires INTEGER NOT NULL
 );
@@ -124,8 +136,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   addCols('criteria', { levels: 'TEXT' });        // JSON: own words for ratings 1..4 (e.g. "One program outreach" ... "More than three")
   addCols('sections', { class_type: 'TEXT' });    // lecture (NULL), lab, skills, clin-dent, clin-pt, clin-mt
   addCols('instruments', { variant: 'TEXT' });    // the type of class this form is for; NULL = standard
-  addCols('periods', { rules: 'TEXT', depts: 'TEXT', approvals: 'TEXT', last_auto: 'TEXT' });
+  addCols('periods', { rules: 'TEXT', depts: 'TEXT', approvals: 'TEXT', last_auto: 'TEXT', policy: 'TEXT', rejections: 'TEXT', formulas: 'TEXT' }); // policy: the version in force for the period; rejections: VP returns with reasons
   addCols('responses', { instrument_id: 'TEXT' });
+  addCols('audit_log', { prev_hash: 'TEXT', hash: 'TEXT' }); // tamper-evident chain (see addAudit)
   // Forms used to allow only one per pairing (UNIQUE). Versions need several, so rebuild that table once.
   if (/UNIQUE/i.test(sql.prepare("SELECT sql FROM sqlite_master WHERE name='instruments'").get().sql)) {
     sql.exec('PRAGMA foreign_keys = OFF');
@@ -152,12 +165,15 @@ const TABLES = [
   { name: 'instruments', key: ['id'], rows: (db) => db.instruments.map((i) => ({ id: i.id, name: i.name, target_type: i.targetType, evaluator_group: i.group, dept: i.dept ?? null, version: i.version ?? 1, active: i.active === false ? 0 : 1, categories: i.categories && Object.keys(i.categories).length ? JSON.stringify(i.categories) : null, variant: i.variant || null })) },
   { name: 'instrument_items', key: ['instrument_id', 'criterion_id'], rows: (db) => db.instruments.flatMap((i) => i.items.map((it) => ({ instrument_id: i.id, criterion_id: it.criterionId, weight: it.weight, category: it.category || null }))) },
   { name: 'group_weights', key: ['target_type', 'evaluator_group'], rows: (db) => Object.entries(db.rules).flatMap(([tt, r]) => Object.entries(r).map(([g, w]) => ({ target_type: tt, evaluator_group: g, weight: w }))) },
-  { name: 'periods', key: ['id'], rows: (db) => db.periods.map((p) => ({ id: p.id, name: p.name, deadline: p.deadline, status: p.status, release_stage: p.releaseStage, threshold_checked: p.thresholdChecked ? 1 : 0, rules: p.rules ? JSON.stringify(p.rules) : null, depts: p.depts?.length ? JSON.stringify(p.depts) : null, approvals: p.approvals?.length ? JSON.stringify(p.approvals) : null, last_auto: p.lastAuto ?? null })) },
+  { name: 'periods', key: ['id'], rows: (db) => db.periods.map((p) => ({ id: p.id, name: p.name, deadline: p.deadline, status: p.status, release_stage: p.releaseStage, threshold_checked: p.thresholdChecked ? 1 : 0, rules: p.rules ? JSON.stringify(p.rules) : null, depts: p.depts?.length ? JSON.stringify(p.depts) : null, approvals: p.approvals?.length ? JSON.stringify(p.approvals) : null, last_auto: p.lastAuto ?? null, policy: p.policy ? JSON.stringify(p.policy) : null, rejections: p.rejections?.length ? JSON.stringify(p.rejections) : null, formulas: p.formulas && Object.keys(p.formulas).length ? JSON.stringify(p.formulas) : null })) },
+  { name: 'formulas', key: ['id'], rows: (db) => (db.formulas || []).map((f) => ({ id: f.id, key: f.key, target_type: f.targetType, dept: f.dept ?? null, version: f.version, status: f.status, config: JSON.stringify(f.config), meta: JSON.stringify(f.meta || {}) })) },
   { name: 'tasks', key: ['id'], rows: (db) => db.tasks.map((t) => ({ id: t.id, period_id: t.periodId, evaluator_id: t.evaluatorId, target_id: t.targetId, evaluator_group: t.group, section_id: t.sectionId, draft: t.draft ? JSON.stringify(t.draft) : null })) },
+  { name: 'results', key: ['period_id', 'target_id'], rows: (db) => (db.results || []).map((r) => ({ period_id: r.periodId, target_id: r.targetId, data: JSON.stringify(r.data) })) },
   { name: 'responses', key: ['task_id'], rows: (db) => db.tasks.filter((t) => t.response).map((t) => ({ task_id: t.id, submitted_at: t.response.submittedAt, instrument_id: t.response.instrumentId ?? null, comment: t.response.comment ? JSON.stringify(t.response.comment) : null })) },
   { name: 'answers', key: ['task_id', 'criterion_id'], rows: (db) => db.tasks.filter((t) => t.response).flatMap((t) => Object.entries(t.response.answers).map(([c, v]) => ({ task_id: t.id, criterion_id: c, value: v, weight: t.response.weights[c] ?? 1 }))) },
   { name: 'result_requests', key: ['id'], rows: (db) => db.requests.map((r) => ({ id: r.id, period_id: r.periodId, target_id: r.targetId, office: r.office, head_id: r.headId, by_id: r.byId, at: r.at })) },
   { name: 'past_results', key: ['id'], rows: (db) => db.pastResults.map((r) => ({ id: r.id, user_id: r.userId, period_label: r.periodLabel, final: r.final, note: r.note ?? null, imported_at: r.importedAt })) },
+  { name: 'policies', key: ['version'], rows: (db) => (db.policies || []).map((x) => ({ version: x.version, data: JSON.stringify(x.policy), at: x.at, by_id: x.byId ?? null, by_name: x.byName ?? null, reason: x.reason ?? null })) },
   { name: 'notifications', key: ['id'], rows: (db) => db.notifications.map((n) => ({ id: n.id, key: n.key ?? null, user_id: n.userId, kind: n.kind, at: n.at, read: n.read ? 1 : 0, text: n.text })) },
 ];
 
@@ -185,6 +201,7 @@ function readFromTables() {
   for (const r of all('SELECT * FROM group_weights ORDER BY rowid')) (db.rules[r.target_type] ||= {})[r.evaluator_group] = r.weight;
   db.periods = all('SELECT * FROM periods ORDER BY rowid').map((p) => ({ id: p.id, name: p.name, deadline: p.deadline, status: p.status, releaseStage: p.release_stage, thresholdChecked: !!p.threshold_checked,
     rules: p.rules ? JSON.parse(p.rules) : null, depts: p.depts ? JSON.parse(p.depts) : null, approvals: p.approvals ? JSON.parse(p.approvals) : [], lastAuto: p.last_auto,
+    policy: p.policy ? JSON.parse(p.policy) : null, rejections: p.rejections ? JSON.parse(p.rejections) : [], formulas: p.formulas ? JSON.parse(p.formulas) : null,
   }));
   const answers = {};
   for (const a of all('SELECT * FROM answers ORDER BY rowid')) {
@@ -199,6 +216,9 @@ function readFromTables() {
   }));
   db.requests = all('SELECT * FROM result_requests ORDER BY rowid').map((r) => ({ id: r.id, periodId: r.period_id, targetId: r.target_id, office: r.office, headId: r.head_id, byId: r.by_id, at: r.at }));
   db.pastResults = all('SELECT * FROM past_results ORDER BY rowid').map((r) => ({ id: r.id, userId: r.user_id, periodLabel: r.period_label, final: r.final, note: r.note, importedAt: r.imported_at }));
+  db.formulas = all('SELECT * FROM formulas ORDER BY rowid').map((f) => ({ id: f.id, key: f.key, targetType: f.target_type, dept: f.dept, version: f.version, status: f.status, config: JSON.parse(f.config), meta: f.meta ? JSON.parse(f.meta) : {} }));
+  db.results = all('SELECT * FROM results ORDER BY rowid').map((r) => ({ periodId: r.period_id, targetId: r.target_id, data: JSON.parse(r.data) }));
+  db.policies = all('SELECT * FROM policies ORDER BY version').map((x) => ({ version: x.version, policy: JSON.parse(x.data), at: x.at, byId: x.by_id, byName: x.by_name, reason: x.reason }));
   db.notifications = all('SELECT * FROM notifications ORDER BY rowid').map((n) => ({ id: n.id, key: n.key, userId: n.user_id, kind: n.kind, at: n.at, read: !!n.read, text: n.text }));
   return db;
 }
@@ -258,7 +278,7 @@ export function save(next) {
 export function replaceAll(db) {
   const users = db.users;
   inTransaction(() => {
-    for (const t of ['answers', 'responses', 'result_requests', 'past_results', 'tasks', 'notifications', 'periods', 'group_weights', 'instrument_items', 'instruments', 'criteria', 'section_students', 'sections']) sql.exec(`DELETE FROM ${t}`);
+    for (const t of ['results', 'answers', 'responses', 'result_requests', 'past_results', 'tasks', 'notifications', 'policies', 'periods', 'group_weights', 'instrument_items', 'instruments', 'criteria', 'section_students', 'sections']) sql.exec(`DELETE FROM ${t}`);
     // keep sessions of users that still exist; replace user rows in place
     // free every username first, so a seed username can't clash with an account HR created
     sql.exec("UPDATE users SET username = '~' || id, email = NULL");
@@ -293,8 +313,35 @@ export const deleteUserSessions = (userId, keepTokenHash = '') => sql.prepare('D
 export const deleteExpiredSessions = () => sql.prepare('DELETE FROM sessions WHERE expires < ?').run(Date.now());
 
 // ---------- FR20: audit log (written directly, never edited or deleted by the app) ----------
+// Each entry stores a SHA-256 hash of its own content plus the previous entry's hash (a hash chain).
+// Changing, inserting or deleting an entry directly in the database breaks the chain; verifyAudit() finds where.
+const GENESIS = 'evalU-audit-start';
+const entryHash = (prev, e) => createHash('sha256').update([prev, e.at, e.user_id ?? '', e.user_name ?? '', e.action, e.detail ?? ''].join('\u001f')).digest('hex');
+const lastHash = () => sql.prepare('SELECT hash FROM audit_log WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1').get()?.hash || GENESIS;
 export function addAudit(user, action, detail = '') {
-  sql.prepare('INSERT INTO audit_log (at, user_id, user_name, action, detail) VALUES (?,?,?,?,?)')
-    .run(new Date().toISOString(), user?.id ?? null, user?.name ?? null, action, String(detail).slice(0, 1000));
+  const e = { at: new Date().toISOString(), user_id: user?.id ?? null, user_name: user?.name ?? null, action, detail: String(detail).slice(0, 1000) };
+  const prev = lastHash();
+  sql.prepare('INSERT INTO audit_log (at, user_id, user_name, action, detail, prev_hash, hash) VALUES (?,?,?,?,?,?,?)')
+    .run(e.at, e.user_id, e.user_name, e.action, e.detail, prev, entryHash(prev, e));
+}
+// Entries written before the chain existed get their hashes once, in order.
+{
+  const missing = sql.prepare('SELECT * FROM audit_log WHERE hash IS NULL ORDER BY id').all();
+  if (missing.length) {
+    let prev = sql.prepare('SELECT hash FROM audit_log WHERE hash IS NOT NULL AND id < ? ORDER BY id DESC LIMIT 1').get(missing[0].id)?.hash || GENESIS;
+    const upd = sql.prepare('UPDATE audit_log SET prev_hash = ?, hash = ? WHERE id = ?');
+    inTransaction(() => { for (const e of missing) { const h = entryHash(prev, e); upd.run(prev, h, e.id); prev = h; } });
+  }
+}
+/** Recompute the whole chain: { ok, checked, firstBad: { id, at, reason } | null }. */
+export function verifyAudit() {
+  let prev = GENESIS, checked = 0;
+  for (const e of sql.prepare('SELECT * FROM audit_log ORDER BY id').all()) {
+    checked++;
+    if (e.prev_hash !== prev) return { ok: false, checked, firstBad: { id: e.id, at: e.at, reason: 'an entry before this one was deleted, or one was inserted' } };
+    if (e.hash !== entryHash(prev, e)) return { ok: false, checked, firstBad: { id: e.id, at: e.at, reason: 'this entry was changed after it was written' } };
+    prev = e.hash;
+  }
+  return { ok: true, checked, firstBad: null };
 }
 export const readAudit = (limit = 500) => sql.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT ?').all(limit);

@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react';
 import { useApp } from '../lib/store';
 import {
   GROUPS, TARGET_TYPES, STAGES, STAGE_LABEL, taskStatus, userById, sectionStats, targetsOf, evaluatorGroups, deptName,
-  formUsed, itemCategory, effectiveWeights, isExemptSection, isTeacher, pendingApprovals, periodCovers, CLASS_TYPES,
+  formUsed, itemCategory, effectiveWeights, isExemptSection, isTeacher, pendingApprovals, periodCovers, CLASS_TYPES, approvalRuleText, policyFor, activeFormula, formulaText,
 } from '../lib/logic';
 
 /** Types of class HR can pick for a section. A Clinical Instructor (Nursing) works in the clinical area or the skills lab. */
 const classTypesFor = (teacher) => (teacher?.position === 'ci'
   ? [['', 'Clinical area (hospital, community clinic)'], ['skills', CLASS_TYPES.skills]]
   : Object.entries(CLASS_TYPES).filter(([k]) => k !== 'skills'));
+import { QrButton } from './ClassQr';
 import { Card, StatusBadge, RuleNote, PeriodPicker, Select, Badge, SaveInput, Meter, Empty, pct, newestFirst, usePages, ask } from '../ui';
 
 const scopeText = (db, p) => (p.depts?.length ? p.depts.map((d) => deptName(db, d)).join(', ') : 'All departments');
@@ -69,7 +70,9 @@ export function Periods() {
                   <td className="muted">{scopeText(db, p)}</td>
                   <td><input type="date" value={p.deadline} onChange={(e) => e.target.value && act('setPeriodDeadline', { periodId: p.id, deadline: e.target.value })} /></td>
                   <td><Badge kind={p.status === 'open' ? 'pending' : 'completed'}>{p.status}</Badge></td>
-                  <td>{STAGE_LABEL[p.releaseStage]}{p.releaseStage === 'dir' && <><br /><span className="muted">{waiting.length ? `Waiting for approval: ${waiting.map((u) => u.name).join(', ')}` : 'All VPs approved'}</span></>}</td>
+                  <td>{STAGE_LABEL[p.releaseStage]}{p.releaseStage === 'dir' && <><br /><span className="muted">{waiting.length ? `Waiting for approval (${approvalRuleText(db, p)}): ${waiting.map((u) => u.name).join(', ')}` : 'Enough VPs approved'}</span></>}
+                    {p.rejections?.length > 0 && p.releaseStage === 'hr' && <><br /><Badge kind="overdue">returned by {p.rejections.at(-1).name}</Badge> <span className="muted small">"{p.rejections.at(-1).reason}"</span></>}
+                    <br /><span className="muted small">Rules: policy v{policyFor(db, p.id).version ?? 0}{p.status === 'open' ? ' (follows changes)' : ' (fixed)'}</span></td>
                   <td className="row">
                     {p.status === 'open' && <button onClick={async () => { if (await ask(`Close ${p.name}?`, 'Classes where fewer than half of the class plus one answered will be excluded, and everyone concerned is notified.', { ok: 'Close period' })) run('closePeriod', p.id, (r) => `${p.name} closed. ${r.flagged} class(es) were excluded (below half + 1); the faculty, department heads and HR were notified.`); }}>Close period</button>}
                     {p.status === 'open' && <button className="ghost" onClick={async () => (await ask('Send participation alerts?', 'Teachers and department heads of classes below half + 1 are notified now.', { ok: 'Send alerts' })) && run('checkThreshold', p.id, (r) => (r.flagged ? `${r.flagged} class(es) are at or below half. The faculty, their department heads and HR were notified.` : 'Every class has enough responses so far.'))}>Send participation alerts</button>}
@@ -251,10 +254,22 @@ export function Classes() {
           <label className="file-pick"><input type="file" accept=".csv,.txt,text/csv" onChange={async (e) => { const file = e.target.files?.[0]; if (file) { setCsv(await file.text()); setOut(null); } e.target.value = ''; }} />Choose CSV file…</label>
           <a className="ghost-link" href={'data:text/csv;charset=utf-8,' + encodeURIComponent(SAMPLE_CLASS_LIST)} download="class-list-example.csv">Download an example file</a>
         </div>
-        <textarea rows={6} value={csv} onChange={(e) => setCsv(e.target.value)} placeholder={SAMPLE_CLASS_LIST} />
-        <div className="row"><button disabled={busy || !csv.trim() || !listDept} title={listDept ? '' : 'Choose the department first'} onClick={async () => { setBusy(true); const r = await act('importClassList', { csv, dept: listDept }); setBusy(false); if (r) { setOut(r); if (!r.errorCount) setCsv(''); } }}>{busy ? 'Importing… (this can take a minute for big lists)' : 'Import class list'}</button>
-          {csv.trim() && <span className="muted">{csv.trim().split(/\r?\n/).filter((l) => l.trim() && !/^\s*section/i.test(l)).length} row(s) ready</span>}</div>
-        {out && <div className={`note ${out.errorCount ? 'warn' : 'ok'}`}>{out.created} class section(s) created, <b>{out.teachers || 0} teacher account(s)</b> and <b>{out.accounts || 0} student account(s) created</b>, {out.enrolled} enrolment(s) added.{(out.accounts > 0 || out.teachers > 0) && ' New students sign in with their UB email and their student ID as the password; new teachers with their UB email and the part before the @.'}{out.errorCount > 0 && <> {out.errorCount} row(s) skipped:<ul>{out.errors.map((e, i) => <li key={i}>{e}</li>)}</ul></>}</div>}
+        <textarea rows={6} value={csv} onChange={(e) => { setCsv(e.target.value); setOut(null); }} placeholder={SAMPLE_CLASS_LIST} />
+        <div className="row">
+          {/* step 1: check the file (nothing is saved); step 2: import */}
+          <button className="ghost" disabled={busy || !csv.trim() || !listDept} title={listDept ? '' : 'Choose the department first'} onClick={async () => { setBusy(true); const r = await act('importClassList', { csv, dept: listDept, preview: true }); setBusy(false); if (r) setOut(r); }}>1. Check file</button>
+          <button disabled={busy || !csv.trim() || !listDept || !out?.preview} title={out?.preview ? '' : 'Check the file first'} onClick={async () => { if (out.errorCount && !(await ask('Import with problem rows?', `${out.errorCount} row(s) have a problem and will be skipped. The other rows are imported.`, { ok: 'Import the good rows' }))) return; setBusy(true); const r = await act('importClassList', { csv, dept: listDept }); setBusy(false); if (r) { setOut(r); if (!r.errorCount) setCsv(''); } }}>{busy ? 'Working… (big lists can take a minute)' : '2. Import class list'}</button>
+          {csv.trim() && <span className="muted">{csv.trim().split(/\r?\n/).filter((l) => l.trim() && !/^\s*section/i.test(l)).length} row(s) in the file</span>}</div>
+        {out?.preview && (
+          <div className={`note ${out.errorCount ? 'warn' : 'ok'}`}>
+            <b>Check result (nothing saved yet):</b> {out.rows} row(s) read. Importing would create <b>{out.created} class(es)</b>, <b>{out.accounts} new student account(s)</b>{out.teachers ? <>, <b>{out.teachers} new teacher account(s)</b></> : ''}, add <b>{out.enrolled} enrolment(s)</b> and use <b>{out.existingStudents}</b> student(s) who already have an account.
+            {out.duplicates > 0 && <> <b>{out.duplicates} duplicate row(s)</b> are counted once.</>}
+            {out.errorCount > 0 ? <> <b>{out.errorCount} row(s) have a problem</b> and would be skipped:</> : ' No problems found.'}
+            {(out.errors.length > 0 || out.warnings?.length > 0) && <ul>{out.errors.map((e, i) => <li key={'e' + i}>{e}</li>)}{out.warnings.map((w, i) => <li key={'w' + i} className="muted">{w}</li>)}</ul>}
+            {out.newClasses?.length > 0 && <div className="small muted">New classes: {out.newClasses.join('; ')}</div>}
+          </div>
+        )}
+        {out && !out.preview && <div className={`note ${out.errorCount ? 'warn' : 'ok'}`}><b>Imported.</b> {out.created} class section(s) created, <b>{out.teachers || 0} teacher account(s)</b> and <b>{out.accounts || 0} student account(s) created</b>, {out.enrolled} enrolment(s) added{out.duplicates ? `, ${out.duplicates} duplicate row(s) counted once` : ''}.{(out.accounts > 0 || out.teachers > 0) && ' New students sign in with their UB email and their student ID as the password; new teachers with their UB email and the part before the @.'}{out.errorCount > 0 && <> {out.errorCount} row(s) skipped:<ul>{out.errors.map((e, i) => <li key={i}>{e}</li>)}</ul></>}</div>}
       </Card>
       <Card title="Add a class section">
         <div className="row">
@@ -264,7 +279,7 @@ export function Classes() {
           <button onClick={async () => { setMsg(''); if (await act('createSection', f)) { setF({ code: '', subject: '', facultyId: '' }); setMsg('Section added. Enrol students under Accounts or by importing a class list.'); } }}>Add</button>
         </div>
       </Card>
-      <Card title={`Class sections (${listed.length}${listed.length !== db.sections.length ? ` of ${db.sections.length}` : ''})`}>
+      <Card title={`Class sections (${listed.length}${listed.length !== db.sections.length ? ` of ${db.sections.length}` : ''})`} actions={<QrButton sections={listed.filter((x) => !isExemptSection(x))} label="QR codes for these classes" />}>
         <div className="row">
           <Select value={dept} onChange={setDept}><option value="">All departments</option>{db.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select>
           <Select value={kind} onChange={setKind}><option value="">Evaluated and not evaluated</option><option value="evaluated">Evaluated only</option><option value="exempt">Not evaluated (practicum, internship, field trip)</option></Select>
@@ -282,7 +297,7 @@ export function Classes() {
                 </Select>
               )}</td>
               <td>{isExemptSection(s) ? <Badge kind="muted">not evaluated</Badge> : <Badge kind="completed">yes</Badge>}</td>
-              <td>{!used.has(s.id) && <button className="ghost" onClick={async () => { if (await ask(`Delete section ${s.code}?`, `${s.code} · ${s.subject} and its class list will be removed.`, { ok: 'Delete section', danger: true })) act('deleteSection', { sectionId: s.id }); }}>Delete</button>}</td>
+              <td><QrButton sections={[s]} />{!used.has(s.id) && <button className="ghost" onClick={async () => { if (await ask(`Delete section ${s.code}?`, `${s.code} · ${s.subject} and its class list will be removed.`, { ok: 'Delete section', danger: true })) act('deleteSection', { sectionId: s.id }); }}>Delete</button>}</td>
             </tr>
           ))}</tbody>
         </table>
@@ -497,8 +512,16 @@ export function Weights() {
   return (
     <Card title="Evaluator-group weights (%)">
       <p className="muted">From Table 6 of the manuscript: College faculty — Students 40, Dean 40, Program Chair 20; Basic Education — Students 40, Principal 20, Assistant Principal 20, Subject Head 20; non-teaching personnel are evaluated by one group (head ↔ staff); Clinical Instructors (CIs) — Students 50, Dean 50 until the official weights are given. Weights for evaluating Deans are not given, so HR must enter them. <b>Changes apply to open and future periods; closed periods keep the weights they were computed with.</b> If a group has no valid result, its weight is removed and the score is computed over the rest.</p>
+      <p className="muted">This page is the quick way to set weights (a weighted average). To change the <b>method</b> (simple average, custom expression), the missing-group rule, how evaluators are combined, or the rounding, and to keep approved versions, use <b>Rating formula</b>. Once a category has an active formula, its weights are managed there.</p>
       {Object.entries(db.rules).map(([tt, rule]) => {
         const total = Object.values(rule).reduce((a, w) => a + (Number(w) || 0), 0);
+        const af = activeFormula(db, tt);
+        if (af) return (
+          <div key={tt}>
+            <h4>{TARGET_TYPES[tt]} <Badge kind="completed">formula v{af.version}</Badge></h4>
+            <p className="muted">Computed with <b>{af.config.name}</b> (version {af.version}): <span className="mono">{formulaText(af.config)}</span>. Change it under Rating formula.</p>
+          </div>
+        );
         return (
           <div key={tt}>
             <h4>{TARGET_TYPES[tt]} {total !== 100 && <Badge kind="overdue">total {total}% (should be 100%)</Badge>}</h4>
@@ -592,6 +615,7 @@ const AUDIT_LABEL = {
   setGroupWeight: 'Changed a weight', closePeriod: 'Closed a period', reopenPeriod: 'Reopened a period', createPeriod: 'Created a period',
   submitEvaluation: 'Submitted an evaluation', recordResultRequest: 'Released results through a dean', signIn: 'Signed in', signOut: 'Signed out',
   automaticReminders: 'Automatic reminders', resetData: 'Reset all data', showTempPassword: 'Viewed a temporary password',
+  setPolicy: 'Changed the evaluation policy', saveFormulaDraft: 'Saved a formula draft', submitFormula: 'Submitted a formula for approval', approveFormula: 'Approved a formula (VP)', rejectFormula: 'Returned a formula (VP)', activateFormula: 'Activated a formula', deleteFormulaDraft: 'Deleted a formula draft', returnToHR: 'Returned results to HR (VP)', verifyAudit: 'Checked the audit log', importClassList: 'Imported a class list',
 };
 export function AuditLog() {
   const { user } = useApp();
@@ -599,6 +623,20 @@ export function AuditLog() {
   const [err, setErr] = useState('');
   const [kind, setKind] = useState('results');
   const [q, setQ] = useState('');
+  const [check, setCheck] = useState(null);
+  // tamper check: recompute the hash chain on the server
+  const verify = async () => {
+    setCheck({ busy: true });
+    try { const r = await fetch('/api/audit/verify', { credentials: 'same-origin' }); setCheck(await r.json()); load(); } catch { setCheck({ error: "Can't reach the server." }); }
+  };
+  // CSV for the records (opens in Excel)
+  const exportCsv = () => {
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const lines = [['When', 'Who', 'Action', 'Details', 'Hash'], ...list.map((r) => [r.at, r.user_name || 'System', AUDIT_LABEL[r.action] || r.action, r.detail || '', r.hash || ''])].map((x) => x.map(esc).join(','));
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([lines.join('\r\n')], { type: 'text/csv' }));
+    a.download = `evalU-audit-log-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+  };
   const load = async () => {
     setErr('');
     try {
@@ -608,15 +646,19 @@ export function AuditLog() {
     } catch { setErr("Can't reach the server."); }
   };
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
-  const RESULT = new Set(['view', 'releaseNext', 'withdrawRelease', 'approveRelease', 'setGroupWeight', 'closePeriod', 'reopenPeriod', 'recordResultRequest', 'reviseForm', 'setFormItemWeight', 'setFormCategoryWeight', 'resetData']);
+  const RESULT = new Set(['view', 'releaseNext', 'withdrawRelease', 'approveRelease', 'returnToHR', 'setPolicy', 'verifyAudit', 'saveFormulaDraft', 'submitFormula', 'approveFormula', 'rejectFormula', 'activateFormula', 'deleteFormulaDraft', 'setGroupWeight', 'closePeriod', 'reopenPeriod', 'recordResultRequest', 'reviseForm', 'setFormItemWeight', 'setFormCategoryWeight', 'resetData']);
   const s = q.trim().toLowerCase();
   const list = (rows || []).filter((r) => (kind === 'all' || (kind === 'results' ? RESULT.has(r.action) : kind === r.action))
     && (!s || `${r.user_name} ${r.detail} ${r.action}`.toLowerCase().includes(s)));
   const page = usePages(list, `${kind}|${s}`);
   if (user.role !== 'HR') return null;
   return (
-    <Card title="Audit log" actions={<button className="ghost" onClick={load}>Refresh</button>}>
-      <p className="muted">Every view, change and release of results is recorded with who did it and when. Entries can't be edited or deleted.</p>
+    <Card title="Audit log" actions={<span className="row" style={{ margin: 0 }}><button className="ghost" onClick={exportCsv} disabled={!list.length}>Export CSV</button><button className="ghost" onClick={load}>Refresh</button><button onClick={verify}>Verify integrity</button></span>}>
+      <p className="muted">Every view, change and release of results is recorded with who did it and when, with before → after values for rule changes. Each entry is sealed with a SHA-256 hash that includes the previous entry, so editing or deleting an entry directly in the database breaks the chain. <b>Verify integrity</b> recomputes the whole chain.</p>
+      {check?.busy && <div className="note">Checking every entry…</div>}
+      {check?.ok === true && <div className="note ok"><b>Intact.</b> All {check.checked} entries match their hashes; nothing was changed or deleted.</div>}
+      {check?.ok === false && <div className="note warn"><b>Tampering detected</b> at entry #{check.firstBad.id} ({new Date(check.firstBad.at).toLocaleString()}): {check.firstBad.reason}. {check.checked - 1} entries before it are intact.</div>}
+      {check?.error && <div className="note warn">{check.error}</div>}
       <div className="row">
         <Select value={kind} onChange={setKind}>
           <option value="results">Results: views, changes, releases</option>

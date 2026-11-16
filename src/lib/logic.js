@@ -15,15 +15,52 @@ export const THRESHOLD = 0.5;           // the line drawn on progress bars (the 
 export const LOW_ITEM = 3.0;            // FR19: items averaging below "Satisfactory" (UB's 4-point scale) are flagged
 export { MAX_RATING, SCALES, CLASS_TYPES } from './ubForms.js';
 import { MAX_RATING, SCALES } from './ubForms.js';
+import { defaultFormula, computeFinal } from './formula.js';
+export { METHODS, AGGREGATIONS, MISSING_RULES, ROUNDING_METHODS, roundBy, parseExpression, validateFormula, computeFinal, defaultFormula, formulaText, formulaWords, howInWords } from './formula.js';
 
-/** UB's rating interpretation (HRMC comprehensive report): 3.51-4.00, 3.00-3.50, 2.50-2.99, 2.49 and below. */
-export function interpretation(score, nonTeaching = false) {
+/* ---------- evaluation policy (HR changes it without a programmer; each period keeps the version it used) ---------- */
+/**
+ * The rules that turn answers into ratings. The defaults are UB's current practice (HRMC comprehensive
+ * report and the interview); HR can change them under "Policy & rules". Every change becomes a new
+ * version with a reason, so a closed period is always computed with the rules it was evaluated under.
+ */
+export const DEFAULT_POLICY = Object.freeze({
+  participationPercent: 50,  // FR11: a class counts when this % of the class answered ...
+  participationPlusOne: true, // ... plus one (UB: "half of the class plus one"); false = at least that %
+  bands: [3.51, 3.0, 2.5],    // lowest score for Outstanding / Satisfactory / Fair; below = Poor
+  lowItem: 3.0,               // FR19: items averaging below this are flagged
+  decimals: 2,                // FR13: final ratings are rounded to this many decimals
+  missingGroup: 'reweight',   // FR13: a group with no valid result: 'reweight' (remove it from the denominator) or 'incomplete' (no final rating)
+  minAnonymity: 2,            // students' comments are shown only when at least this many students of that teacher answered
+  approvalMode: 'all',        // FR17: 'all' VPs must approve, 'any' one VP is enough, or 'count' = at least approvalCount
+  approvalCount: 1,
+});
+/** The policy in force now (the newest version HR saved). */
+export const currentPolicy = (db) => ({ ...DEFAULT_POLICY, ...(db?.policies?.at(-1)?.policy || {}), version: db?.policies?.at(-1)?.version || 0 });
+/** The policy of a period: the version it was created/closed with (NFR8), else the current one. */
+export const policyFor = (db, periodId) => {
+  const p = periodId && db?.periods?.find((x) => x.id === periodId);
+  return p?.policy ? { ...DEFAULT_POLICY, ...p.policy } : currentPolicy(db);
+};
+/** Round to the policy's number of decimals (2 by default). */
+export const roundTo = (x, d = 2) => (x == null ? null : Math.round((x + Number.EPSILON) * 10 ** d) / 10 ** d);
+
+/** UB's rating interpretation (HRMC comprehensive report): 3.51-4.00, 3.00-3.50, 2.50-2.99, 2.49 and below (by default). */
+export function interpretation(score, nonTeaching = false, policy = DEFAULT_POLICY) {
   if (score == null) return '';
-  const s = Math.round((score + Number.EPSILON) * 100) / 100;
+  const [o, s2, f] = policy.bands || DEFAULT_POLICY.bands;
+  const s = roundTo(score, policy.decimals ?? 2);
   const words = nonTeaching ? ['Excellent', 'Good', 'Fair', 'Poor'] : ['Outstanding', 'Satisfactory', 'Fair', 'Poor'];
-  return s >= 3.51 ? words[0] : s >= 3.0 ? words[1] : s >= 2.5 ? words[2] : words[3];
+  return s >= o ? words[0] : s >= s2 ? words[1] : s >= f ? words[2] : words[3];
 }
-export const INTERPRETATION_TABLE = [['3.51 - 4.00', 0], ['3.00 - 3.50', 1], ['2.50 - 2.99', 2], ['2.49 and below', 3]];
+/** The interpretation table printed on reports, from the policy's bands: [['3.51 - 4.00', 0], …]. */
+export function bandTable(policy = DEFAULT_POLICY) {
+  const [o, s, f] = policy.bands || DEFAULT_POLICY.bands;
+  const d = policy.decimals ?? 2;
+  const below = (x) => (x - 1 / 10 ** d).toFixed(d);
+  return [[`${o.toFixed(d)} - 4.00`, 0], [`${s.toFixed(d)} - ${below(o)}`, 1], [`${f.toFixed(d)} - ${below(s)}`, 2], [`${below(f)} and below`, 3]];
+}
+export const INTERPRETATION_TABLE = bandTable(DEFAULT_POLICY);
 /** The words for each rating (1..4) on a form: the item's own levels if it has them, else the form's scale. */
 export const scaleOf = (ins) => SCALES[ins && String(ins.targetType).startsWith('NTP') ? 'perf' : 'demo'];
 export const ratingWords = (ins, criterion) => (criterion?.levels?.length === MAX_RATING ? criterion.levels : scaleOf(ins));
@@ -34,8 +71,13 @@ export const INSTITUTION_DOMAIN = 'ubaguio.edu';
 export const isInstitutionalEmail = (e) =>
   typeof e === 'string' && /^[a-z0-9._%+-]+@([a-z0-9-]+\.)*ubaguio\.edu$/i.test(e.trim());
 
-/** FR11: responses needed for a class to count: half of the class plus one. */
-export const neededResponses = (enrolled) => Math.floor(enrolled / 2) + 1;
+/** FR11: responses needed for a class to count: half of the class plus one (by default; HR can change the policy). */
+export function neededResponses(enrolled, policy = DEFAULT_POLICY) {
+  if (!enrolled) return 0;
+  const p = Number(policy.participationPercent ?? 50);
+  const n = policy.participationPlusOne === false ? Math.ceil((enrolled * p) / 100) : Math.floor((enrolled * p) / 100) + 1;
+  return Math.min(enrolled, Math.max(1, n));
+}
 
 /** FR6: internship, practicum and field trip subjects are not evaluated. */
 export const EXEMPT_SUBJECT = /\b(intern(ship)?s?|practicum|ojt|field ?trips?)\b/i;
@@ -243,7 +285,7 @@ export function sectionStats(db, periodId, sectionId) {
   const tasks = db.tasks.filter((t) => t.periodId === periodId && t.sectionId === sectionId && t.group === 'ST');
   const required = tasks.length;
   const done = tasks.filter((t) => t.response);
-  const needed = neededResponses(required);
+  const needed = neededResponses(required, policyFor(db, periodId));
   const rate = required ? done.length / required : 0;
   const valid = required > 0 && done.length >= needed;
   const score = valid ? mean(done.map((t) => responseScore(t.response))) : null;
@@ -253,41 +295,71 @@ export function sectionStats(db, periodId, sectionId) {
 /** NFR8: group weights in force for a period (fixed when the period is closed). */
 export const rulesFor = (db, periodId) => periodById(db, periodId)?.rules || db.rules;
 
-export function computeTarget(db, periodId, targetId) {
+/* ---------- FR13: the final rating, computed by the formula engine (src/lib/formula.js) ---------- */
+/** The key of a formula: per evaluated category, optionally only for one department (a condition). */
+export const formulaKey = (tt, dept) => (dept ? `${tt}|${dept}` : tt);
+/** The formula version in use now for a category (a department-specific one wins). */
+export function activeFormula(db, tt, dept) {
+  const list = (db.formulas || []).filter((f) => f.status === 'active' && f.targetType === tt);
+  return (dept && list.find((f) => f.dept === dept)) || list.find((f) => !f.dept) || null;
+}
+/** A formula record as the engine needs it (its rules plus its identity). */
+export const formulaSnapshot = (rec) => ({ ...rec.config, id: rec.id, version: rec.version, key: rec.key, dept: rec.dept || null });
+/**
+ * The formula a period uses for a category: the version fixed in the period (NFR8), else the active one
+ * (for previews outside a period), else the starting formula (the starting percentages saved at setup).
+ */
+export function formulaFor(db, periodId, tt, dept) {
+  const p = periodId && periodById(db, periodId);
+  const snap = p?.formulas || {};
+  const fixed = (dept && snap[formulaKey(tt, dept)]) || snap[tt];
+  if (fixed) return fixed;
+  if (!p) { const a = activeFormula(db, tt, dept); if (a) return formulaSnapshot(a); }
+  return defaultFormula(rulesFor(db, periodId)[tt] || {}, policyFor(db, periodId));
+}
+/** Evaluation groups that have a form for a category (only those can be put in its formula). */
+export const formGroups = (db, tt) => [...new Set(db.instruments.filter((i) => i.active !== false && i.targetType === tt).map((i) => i.group))];
+const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+
+/**
+ * A person's result for a period. opts.formula runs another formula on the same answers (the simulator).
+ * The result keeps the formula used, each group's contribution (breakdown) and the computation steps.
+ */
+export function computeTarget(db, periodId, targetId, opts = {}) {
   const target = userById(db, targetId);
   const tt = targetType(db, target);
-  const rule = rulesFor(db, periodId)[tt] || {};
+  const f = opts.formula || formulaFor(db, periodId, tt, target?.dept);
+  const comps = f.components || [];
   const groups = {};
   const sections = [];
-  for (const g of Object.keys(rule)) {
+  const shown = (c) => (f.method === 'WEIGHTED_AVERAGE' ? c.weight : f.method === 'AVERAGE' ? +(100 / comps.length).toFixed(2) : null);
+  for (const c of comps) {
+    const g = c.group;
     const tasks = db.tasks.filter((t) => t.periodId === periodId && t.targetId === targetId && t.group === g);
     if (g === 'ST') {
       const secIds = [...new Set(tasks.map((t) => t.sectionId))];
       const st = secIds.map((id) => sectionStats(db, periodId, id));
       sections.push(...st);
-      const valid = st.filter((s) => s.valid);
-      groups[g] = { weight: rule[g], score: mean(valid.map((s) => s.score)), required: tasks.length, responded: tasks.filter((t) => t.response).length, invalidSections: st.filter((s) => !s.valid).length };
+      const valid = st.filter((x) => x.valid);
+      // aggregation: average of each class's average (UB practice), or all counted students together
+      const score = c.aggregation === 'POOLED'
+        ? mean(tasks.filter((t) => t.response && valid.some((x) => x.section?.id === t.sectionId)).map((t) => responseScore(t.response)))
+        : mean(valid.map((x) => x.score));
+      groups[g] = { weight: shown(c), score, required: tasks.length, responded: tasks.filter((t) => t.response).length, invalidSections: st.filter((x) => !x.valid).length, aggregation: c.aggregation };
     } else {
       const done = tasks.filter((t) => t.response);
-      groups[g] = { weight: rule[g], score: mean(done.map((t) => responseScore(t.response))), required: tasks.length, responded: done.length };
+      const scores = done.map((t) => responseScore(t.response));
+      groups[g] = { weight: shown(c), score: c.aggregation === 'MEDIAN' ? median(scores) : mean(scores), required: tasks.length, responded: done.length, aggregation: c.aggregation };
     }
   }
-  const missingW = Object.keys(groups).filter((g) => groups[g].weight == null || groups[g].weight === '');
-  const missing = Object.keys(groups).filter((g) => groups[g].score == null);
-  const total = Object.values(groups).reduce((a, g) => a + (Number(g.weight) || 0), 0);
-  let final = null, status, basis = null;
-  if (missingW.length) status = 'weights-missing';
-  else {
-    // FR13: a group with no valid result is removed from the denominator
-    const have = Object.values(groups).filter((g) => g.score != null && Number(g.weight) > 0);
-    basis = have.reduce((a, g) => a + Number(g.weight), 0);
-    if (!have.length || !basis) { status = 'incomplete'; basis = null; }
-    else {
-      final = round2(have.reduce((a, g) => a + Number(g.weight) * g.score, 0) / basis);
-      status = missing.length ? 'reweighted' : 'complete';
-    }
-  }
-  return { targetId, target, type: tt, groups, sections, final, status, missing, missingW, basis, total };
+  const missingW = f.method === 'WEIGHTED_AVERAGE' ? comps.filter((c) => c.weight == null || c.weight === '').map((c) => c.group) : [];
+  const total = f.method === 'WEIGHTED_AVERAGE' ? comps.reduce((a, c) => a + (Number(c.weight) || 0), 0) : 100;
+  const r = computeFinal(f, Object.fromEntries(Object.entries(groups).map(([g, x]) => [g, x.score])));
+  return {
+    targetId, target, type: tt, groups, sections, final: r.final, status: r.status, missing: r.missing, missingW, basis: r.basis, total,
+    formula: { id: f.id || null, key: f.key || tt, name: f.name, version: f.version ?? 0, method: f.method, missing: f.missing, rounding: f.rounding },
+    breakdown: r.breakdown, steps: r.steps,
+  };
 }
 /** A result that has a final score (complete, or re-weighted because a group is missing). */
 export const hasFinal = (r) => r.final != null;
@@ -304,7 +376,7 @@ export function computeAll(db, periodId) {
  * FR15/FR16/FR19: per-item results. For each criterion: number of answers, the mean and the
  * distribution of ratings 1..4. Student identities are never part of this.
  */
-export function itemStats(tasks) {
+export function itemStats(tasks, lowItem = LOW_ITEM) {
   const m = new Map();
   for (const t of tasks) {
     if (!t.response || t.response.redacted) continue;
@@ -314,7 +386,7 @@ export function itemStats(tasks) {
       m.set(cid, x);
     }
   }
-  return [...m.values()].map((x) => ({ ...x, mean: x.sum / x.n, low: x.sum / x.n < LOW_ITEM }));
+  return [...m.values()].map((x) => ({ ...x, mean: x.sum / x.n, low: x.sum / x.n < lowItem, cut: lowItem }));
 }
 
 // ---------- tasks / workflow ----------
@@ -508,7 +580,17 @@ export const canSeeComments = canSeeAll;
 /** FR17: VPs who still have to approve a period before it can go to faculty. */
 export function pendingApprovals(db, period) {
   const done = new Set((period.approvals || []).map((a) => a.userId));
-  return directors(db).filter((u) => !done.has(u.id));
+  const vps = directors(db);
+  const waiting = vps.filter((u) => !done.has(u.id));
+  // policy: every VP, any one VP, or a set number of VPs (so one VP on leave can't block every result)
+  const pol = policyFor(db, period.id);
+  const needed = pol.approvalMode === 'any' ? 1 : pol.approvalMode === 'count' ? Math.min(Math.max(1, Number(pol.approvalCount) || 1), vps.length || 1) : vps.length;
+  return done.size >= needed && vps.length ? [] : waiting;
+}
+/** How many VP approvals the period needs, in words (for the screens). */
+export function approvalRuleText(db, period) {
+  const pol = policyFor(db, period?.id);
+  return pol.approvalMode === 'any' ? 'any one VP' : pol.approvalMode === 'count' ? `at least ${pol.approvalCount} VP${pol.approvalCount > 1 ? 's' : ''}` : 'every VP';
 }
 
 /* ---------- comments: UB's supervisor forms have two boxes ---------- */

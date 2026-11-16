@@ -172,7 +172,13 @@ How much each evaluator group counts: College faculty 40 / 40 / 20, Basic Educat
 
 #### Reports and Analytics
 - **Reports**: overall, per subject, per section, **individual report** (final breakdown, each class, Dean and Program Chair, with **per-item results and the spread of ratings 1–4**, and comments grouped by source), **department summary**, **Print UB reports** (HR; the same layouts as the HRMC samples in `templates and for printing pdf/SAMPLE`): the **Comprehensive report** (one sheet per person with each evaluator group's average, the final rating and the interpretation 3.51–4.00 Outstanding, 3.00–3.50 Satisfactory, 2.50–2.99 Fair, 2.49 and below Poor; one or three per page), the **Performance evaluation** sheets (one per evaluator group, and per class for students: summary by category weighted by its percentage, over-all, interpretation, and the average of every question) and the **Verbatim** sheet (supervisors' comments only, like UB's sample: "BY THE DEAN AS A FACULTY", "BY THE AP/PC/SH AS A FACULTY", each with the employee's development plan and the areas to be improved; students' comments stay on screen in the individual report); faculty get the same sheets under **My results**, **requests from offices** (results are released only through the person's dean), and **earlier records** (import final scores kept before evalU). Use **Print / save as PDF** for a file. The other tabs (Overall, Per subject, Per section, Department summary, All comments) print as a formal HRMC sheet too: UB logo and header, the semester, a bordered table with the interpretation, the rating key and the "computer generated" line; the Individual report prints that person's UB sheets.
-- **Analytics**: trends over time, department comparison, and **item-level results** that flag items below 3.50 and items that stay low across periods.
+- **Analytics**: **key findings** with possible actions, trends over time, **rating distribution**, **participation** by department, department comparison, **strengths and weaknesses by category**, **evaluator agreement**, **compare two periods** (per-person change, with a warning when the periods used different rules, weights or form versions), and **item-level results** that flag items below the policy cutoff (3.00 by default) and items that stay low across periods. Each card has a "Where this comes from" note (data, formula, limits).
+- **Computation formulas** (HR) / **Formula approvals** (VP): the final rating is computed by an engine that runs a formula stored as data: weighted average, simple average or a safe custom expression; groups, weights, aggregation, missing-group rule, minimum groups, rounding, and department-only formulas. Versions go draft → VP approval → active; approved versions never change, each period keeps its version, and closing a period stores every result with its formula and breakdown. A simulator tests a draft on sample scores, standard cases and a real period. Every result shows "How this rating was computed".
+- **QR code per class** (Class lists for HR, My results for teachers): a printable card; students scan it in class and, after signing in, that class's evaluation opens directly.
+- **Comment analysis**: comments are tagged positive / negative / mixed / neutral, marked as suggestions, and sorted by topic, with summaries in Reports and Analytics. Built-in English and Filipino word lists; nothing leaves evalU.
+- **Policy & rules**: the participation rule, rating bands, rounding, low-item cutoff, missing-group rule, minimum students before comments are shown, and how many VPs must approve. Every change needs a reason and is kept as a version; closed periods keep the version they were computed with.
+- **Audit log**: before → after values for rule changes, a SHA-256 hash chain with **Verify integrity**, and CSV export.
+- **Class lists → Check file** before importing: duplicates and invalid rows are listed with row numbers and nothing is saved until **Import**.
 
 #### Audit log
 Every view, change and release of results, with who did it and when. It can't be edited.
@@ -261,7 +267,7 @@ To start over afterwards, sign in as HR and click **Reset simulated data** under
 
 1. Each evaluation gets a weighted average of its ratings (1–4), using the form's category and item weights.
 2. **Students**: a class counts only if **at least half of the class plus one** answered (26 of 50). Qualifying classes are averaged. Several program chairs are averaged too.
-3. The groups (Students, Dean, Program Chair…) are combined with the **weights** in force for that period.
+3. The groups (Students, Dean, Program Chair…) are combined with the **rating formula** in force for that period (set by HR on the Rating formula page; no formula is built into the program).
 4. If a group has **no valid result**, its weight is **removed from the denominator** (no dean → computed over 60%).
 5. The final score is **rounded to two decimal places**.
 
@@ -329,7 +335,7 @@ Requirements from Chapter 3, Tables 8 and 9.
 | NFR6 | Faculty can't see results before VP approval | Release requires every VP's approval |
 | NFR7 | Every view, change and release attributable | Audit log |
 | NFR8 | Revising a form or weights doesn't change past results | Form versions; each period keeps its weights |
-| NFR9 | Change forms and weights without code | Forms and Weights pages |
+| NFR9 | Change forms and weights without code | Forms, Weights and Rating formula pages |
 | NFR10 | Keep records as long as storage permits | Nothing is deleted automatically |
 
 ## For developers
@@ -341,7 +347,9 @@ Requirements from Chapter 3, Tables 8 and 9.
 | `npm run dev` | App and backend together, with live reload (the API runs inside the Vite dev server) |
 | `npm run build` | Builds the app into `dist/` |
 | `npm start` | Production server on port 3000 (serves `dist/` and the API) |
-| `npm test` | Logic tests and backend tests (`tests/api.test.mjs` uses a temporary database) |
+| `npm test` | Logic, backend and validation tests (temporary databases) |
+| `npm run test:validation` | 50 validation cases (the panel's scenarios); writes `docs/test-report.md` |
+| `npm run test:load` | 35 simultaneous users; writes `docs/load-test-report.md` (`npm run test:load -- 100` for another number) |
 | `npm run lint` | Code checks with oxlint |
 
 ### Project structure

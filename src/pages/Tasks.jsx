@@ -1,12 +1,24 @@
 import { useState } from 'react';
+import { takeScannedClass } from './ClassQr';
 import { useApp } from '../lib/store';
 import { GROUPS, taskStatus, userById, formForTask, periodById, itemCategory, ratingWords, MAX_RATING, targetType, hasPlanBoxes, commentParts, packComment } from '../lib/logic';
 import { Card, Badge, Avatar, Stat, Stats, Meter, Empty, Icon, dueText, pct } from '../ui';
 
 export default function Tasks() {
   const { db, user } = useApp();
-  const [openId, setOpenId] = useState(null);
-  const [done, setDone] = useState(null);
+  // came from a class QR code: open that class's evaluation right away
+  const [scan] = useState(() => {
+    const id = takeScannedClass();
+    if (!id) return null;
+    const sec = db.sections.find((s) => s.id === id);
+    const t = db.tasks.find((x) => x.sectionId === id && x.evaluatorId === user.id && periodById(db, x.periodId)?.status === 'open');
+    if (!t) return { note: sec ? `You are not on the class list of ${sec.code} ${sec.subject}, or its evaluation is not open. Your other evaluations are below.` : 'This QR code is no longer valid. Your evaluations are below.', warn: true };
+    if (t.response) return { note: `You already evaluated ${sec?.subject || 'this class'}. Thank you!` };
+    return { open: t.id };
+  });
+  const [openId, setOpenId] = useState(scan?.open || null);
+  const [done, setDone] = useState(scan?.note && !scan.warn ? scan.note : null);
+  const [scanWarn] = useState(scan?.warn ? scan.note : null);
   const mine = db.tasks.filter((t) => t.evaluatorId === user.id && periodById(db, t.periodId).status === 'open');
   const withStatus = mine.map((t) => ({ t, s: taskStatus(db, t) }));
   const todo = withStatus.filter((x) => x.s !== 'completed').sort((a, b) => (a.s === 'overdue' ? -1 : 0) - (b.s === 'overdue' ? -1 : 0));
@@ -21,6 +33,7 @@ export default function Tasks() {
   return (
     <>
       {done && <div className="note ok"><Icon name="check" size={16} /> {done}</div>}
+      {scanWarn && <div className="note warn">{scanWarn}</div>}
       {user.role === 'ST' && <StudentRuleNote />}
       <Stats>
         <Stat icon="list" label="To do" value={todo.length} sub={todo.length ? dueText(nextDue) : 'All done'} tone={todo.length ? '' : 'good'} />

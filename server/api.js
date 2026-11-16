@@ -9,7 +9,7 @@
 //                              e.g. changePassword, createUser, resetPassword
 //
 // Used by the Vite dev server (vite.config.js) and the production server (server/index.js).
-import { getDb, save, addAudit, readAudit } from './db.js';
+import { getDb, save, addAudit, readAudit, verifyAudit } from './db.js';
 import { ensureSeeded } from './seed.js';
 import { handleAuthRoute, currentUser, sessionHash } from './auth.js';
 import { actions, describeAction } from './actions.js';
@@ -86,6 +86,13 @@ export async function handleApi(req, res) {
       await dailyAutomation();
       logResultViews(getDb(), user);
       send(res, 200, viewFor(getDb(), user));
+      return true;
+    }
+    if (route === 'GET /api/audit/verify') {
+      if (user.role !== 'HR') throw new HttpError(403, 'You are not allowed to do this.');
+      const r = verifyAudit();
+      addAudit(user, 'verifyAudit', r.ok ? `Audit log verified: ${r.checked} entries intact` : `Audit log check FAILED at entry ${r.firstBad.id}`);
+      send(res, 200, r);
       return true;
     }
     if (route === 'GET /api/audit') {

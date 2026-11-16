@@ -1,7 +1,7 @@
 // What each signed-in user is allowed to see (FR2, NFR5, NFR6).
 // The browser gets a copy of the data with the same shape as before, but with
 // everything the user may not see removed. The pages then work as they did.
-import { canSeeAll, canSeeOwn, canSeeDept, canSeeComments, isResultHead } from '../src/lib/logic.js';
+import { canSeeAll, canSeeOwn, canSeeDept, canSeeComments, isResultHead, policyFor } from '../src/lib/logic.js';
 import { decryptText } from './secrets.js';
 
 // For progress tables we only reveal THAT a student responded, not their answers.
@@ -17,6 +17,16 @@ export function viewFor(db, user) {
     ['dean', 'chair', 'principal', 'aprincipal'].includes(user.position) ? db.sections.filter((s) => s.dept === user.dept).map((s) => s.id) : [],
   );
   const withComment = (r, allowed) => ({ ...r, comment: allowed && r.comment ? decryptText(r.comment) : null });
+  // Anonymity (policy): students' comments about a teacher are shown only when enough students answered,
+  // so a comment can't be traced to one of very few students. Students' submission times are never sent
+  // outside HR, so they can't be matched with who was online.
+  const stAnswered = new Map();
+  for (const t of db.tasks) if (t.group === 'ST' && t.response) { const k = t.periodId + '|' + t.targetId; stAnswered.set(k, (stAnswered.get(k) || 0) + 1); }
+  const shown = (t, r) => {
+    if (t.group !== 'ST') return r;
+    const enough = (stAnswered.get(t.periodId + '|' + t.targetId) || 0) >= (policyFor(db, t.periodId).minAnonymity || 0);
+    return { ...r, submittedAt: null, comment: enough ? r.comment : null, commentHidden: !enough && !!r.comment };
+  };
 
   const tasks = [];
   for (const t of db.tasks) {
@@ -29,13 +39,13 @@ export function viewFor(db, user) {
       tasks.push({ ...t, draft: null, response: t.response && withComment(t.response, true) });
     } else if (canSeeAll(user, p)) {
       // VPs: released periods only, without evaluator identities
-      tasks.push({ ...t, evaluatorId: null, draft: null, response: t.response && withComment(t.response, canSeeComments(user, p)) });
+      tasks.push({ ...t, evaluatorId: null, draft: null, response: t.response && shown(t, withComment(t.response, canSeeComments(user, p))) });
     } else if (t.targetId === user.id && canSeeOwn(user, p)) {
       // FR14/NFR5: my own released results, with comments grouped by source but never who gave them
-      tasks.push({ ...t, evaluatorId: null, draft: null, response: t.response && withComment(t.response, true) });
+      tasks.push({ ...t, evaluatorId: null, draft: null, response: t.response && shown(t, withComment(t.response, true)) });
     } else if (target && target.id !== user.id && target.dept === user.dept && canSeeDept(user, p)) {
       // FR16/FR18: the dean/principal receives the department's released results (anonymous)
-      tasks.push({ ...t, evaluatorId: null, draft: null, response: t.response && withComment(t.response, true) });
+      tasks.push({ ...t, evaluatorId: null, draft: null, response: t.response && shown(t, withComment(t.response, true)) });
     } else if (p.status === 'open' && t.group === 'ST' && (myClasses.has(t.sectionId) || deptClasses.has(t.sectionId))) {
       // live response counts for my classes (faculty) or my department (heads)
       tasks.push({ ...t, evaluatorId: null, draft: null, response: t.response ? COUNT_ONLY : null });
@@ -61,6 +71,9 @@ export function viewFor(db, user) {
     instruments: db.instruments,
     rules: db.rules,
     periods: db.periods,
+    policies: db.policies || [],
+    formulas: db.formulas || [],
+    results: isHR ? db.results || [] : [], // results stored at closing (HR checks them against a fresh computation)
     tasks,
     requests: db.requests.filter((r) => isHR || r.headId === user.id),
     pastResults: db.pastResults.filter(pastVisible),

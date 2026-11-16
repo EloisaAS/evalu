@@ -4,6 +4,7 @@ import { useApp } from '../lib/store';
 import { computeTarget, canSeeOwn, sectionStats, STAGE_LABEL, THRESHOLD, isExemptSection } from '../lib/logic';
 import { Card, Badge, Meter, Empty, Icon, RuleNote } from '../ui';
 import { ResultCard, PastRecords } from './Reports';
+import { QrButton } from './ClassQr';
 import { CompSheet, EvalSheet, VerbatimSheet, evalSheetsOf } from './CompReport';
 
 const KIND = {
@@ -97,7 +98,7 @@ export function MyResults() {
     <>
       {myClasses.length > 0 && open.length > 0 && (
         <div className="no-print"><Card title="Student response progress for my classes">
-          <p className="muted">At least half of the class plus one must answer, or that class is left out of your result. Reminding your students helps.</p>
+          <p className="muted">At least half of the class plus one must answer, or that class is left out of your result. Tip: show the class QR code in class so students can answer on their phones right away.</p>
           {open.flatMap((p) => myClasses.map((s) => {
             const st = sectionStats(db, p.id, s.id);
             return (
@@ -106,6 +107,7 @@ export function MyResults() {
                 <Meter value={st.rate} mark={THRESHOLD} />
                 <b>{st.responded}/{st.required}</b>
                 {!st.required ? <span className="muted">no tasks yet</span> : st.belowHalf ? <Badge kind="overdue">needs {st.needed - st.responded} more</Badge> : <Badge kind="completed">enough responses</Badge>}
+                <QrButton sections={[s]} label="Show QR code" />
               </div>
             );
           }))}
