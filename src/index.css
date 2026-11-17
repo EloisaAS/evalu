@@ -549,7 +549,12 @@ details.source li { margin:2px 0; }
 /* plain-word formula page */
 .fx-now { display:grid; gap:4px; margin:6px 0 12px; }
 .fx-sentence { font-size:18px; }
-.fx-choices { display:flex; flex-wrap:wrap; gap:6px 22px; }
+.fx-choices { display:grid; gap:8px; }
+.fx-choices label.fx-choice { align-items:flex-start; }
+.fx-choices label.fx-choice input { margin-top:3px; }
+.fx-more { margin:10px 0 4px; }
+.fx-more > summary { cursor:pointer; font-weight:600; }
+.fx-more > p { margin:6px 0; }
 .fx-try { margin-top:14px; border-top:1px solid var(--bd); padding-top:4px; }
 .fx-compare { display:flex; align-items:stretch; gap:14px; flex-wrap:wrap; margin:8px 0; }
 .fx-compare > div:not(.fx-arrow) { display:grid; gap:2px; padding:10px 16px; border:1px solid var(--bd); border-radius:10px; min-width:200px; }
@@ -581,3 +586,10 @@ details.source li { margin:2px 0; }
   .qr-grid { grid-template-columns:1fr 1fr; gap:12px; }
   .qr-title { color:#b3001b; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
 }
+/* HR Overview: each term, step by step */
+.term-steps { list-style:none; margin:0; padding:0; display:grid; gap:6px; }
+.term-steps li { display:grid; grid-template-columns:28px 1fr auto; gap:10px; align-items:center; padding:6px 0; border-bottom:1px solid var(--bd); }
+.term-steps li:last-child { border-bottom:0; }
+.term-n { width:24px; height:24px; border-radius:50%; display:grid; place-items:center; font-size:12px; font-weight:700; background:var(--bd); color:var(--fg); }
+.term-steps li.done .term-n { background:var(--pri); color:#fff; }
+@media (max-width:640px) { .term-steps li { grid-template-columns:28px 1fr; } .term-steps li button { grid-column:2; justify-self:start; } }

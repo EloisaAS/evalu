@@ -38,9 +38,9 @@ they cannot be solved by code and are not claimed here.
 
 ### 3. Audit trail and accountability
 - Every audit entry is sealed with a **SHA-256 hash chain** (each entry's hash includes the previous one).
-  **Verify integrity** recomputes the chain and shows the first entry that was changed, inserted or deleted.
+  **Check for tampering** recomputes the chain and shows the first entry that was changed, inserted or deleted.
 - Rule changes are logged with **before → after values** and the reason (policy, weights).
-- **Export CSV** of the audit log, including each entry's hash.
+- **Download for Excel** (CSV) of the audit log, including each entry's hash.
 - Evidence: TC-31, TC-32, TC-33 (an entry edited directly in the database is detected).
 
 ### 4. Advanced data processing and analytics
@@ -50,7 +50,7 @@ they cannot be solved by code and are not claimed here.
   different rules, weights or form versions ("compare with care").
 - Low-item flags use the period's policy cutoff.
 - Analytics now has **Key findings** (plain-language findings, each with a possible action), **Rating distribution**,
-  **Participation** by department, **Strengths and weaknesses by form category**, **Evaluator agreement** (gaps between
+  **Participation** by department, **Strengths and weaknesses by form category**, **Do the evaluator groups agree?** (gaps between
   students and supervisors), plus the trend, department comparison, period comparison and item-level results.
 - Every analytics card has a **"Where this comes from"** note: which evaluations are counted, the formula, and what the
   card cannot tell (descriptive, not predictive or causal). This answers the panel's "analytical validity" concern.
@@ -87,66 +87,145 @@ they cannot be solved by code and are not claimed here.
 - Measured time savings against the current Excel process (baseline vs evalU).
 - Chapter 4 conclusions and recommendations, and fixing Chapter 2's future-tense description of the interview.
 
-## Dynamic Evaluation Computation Engine (formula configurability, Level 2)
+## Algorithm-Independent Performance Evaluation Computation (configurable computation engine)
+
+**Design principle.** evalU does not depend on one institutional formula. If HRMC replaces the 40-40-20 weighted
+formula next year with a simple average, other percentages or a different method, HR changes it on the
+**Rating formula** page, a VP approves it, and evalU keeps working. No source code changes, and old results do not change.
 
 **No formula is built into the program.** The percentages shown at first (e.g. 40% Students + 40% Dean + 20% Program Chair)
 are only the *starting formula* saved in the database from the manuscript (Table 6), marked on screen as not yet confirmed
 by HRMC. HR replaces it on the **Rating formula** page (or starts a blank formula); the Weights page stays for quick weight changes. Start-up repairs never override a category HR has set (TC-47); a blank formula cannot be
 sent until HR chooses the method, the groups and the missing-group rule (TC-48).
 
-The final rating is no longer computed by a formula written in the program. It is computed by an **engine**
-(`src/lib/formula.js`) that runs a **formula stored as data** in the database (`formulas` table). HR encodes the
-formula the evaluation committee approved; the program does not dictate it.
+### How it is built (hybrid: formula configuration + plug-in modules)
 
-| What can be configured (no code change) | Options |
+```
+User interface        HR (Rating formula page) · VP (Formula approvals) · Reports ("How this rating was computed")
+Workflow              draft → sent to VP with its basis → approved / returned → start now or with the next period → archived
+Formula versioning    formulas table (one row per version) · each period keeps the versions it uses · stored results
+Computation engine    src/lib/formula.js: missing groups, minimum groups, rounding, steps (the same for every method)
+Algorithm modules     src/lib/methods/: weighted average · simple average · geometric mean · harmonic mean · HR's own formula
+Data and reporting    evaluation records · stored results · audit log · analytics
+```
+
+**A. Formula configuration (HR, no code change)**
+
+| What can be configured | Options |
 |---|---|
-| Computation method | Weighted average · simple average of the groups · custom expression |
-| Evaluator components | Add or remove groups (any group that has a UB form for that category) |
-| Weights | Per group (must total 100% for a weighted average) |
-| Aggregation inside a group | Average or median of the evaluators; for students, average of class averages or all students together |
-| Missing group | Re-weight · invalidate (no final rating) · count as zero · use the other groups' average |
+| Computation method | Weighted average · simple average · geometric mean · harmonic mean · HR's own formula (custom expression) |
+| Evaluator groups to include | Add or remove groups (any group that has a UB form for that category) |
+| Weights | Per group (must total 100% for the methods that use percentages) |
+| Averaging inside a group | Average or median of the evaluators; for students, average of class averages or all students together |
+| Missing evaluator scores | Re-weight · no final rating · count as zero · use the other groups' average (only the rules that make sense for the method are offered) |
 | Minimum groups | A final rating only when at least N groups have a result |
-| Rounding | 0–4 decimals; half up, half to even, down, up |
+| Rounding precision | 0–4 decimals; half up, half to even, down, up |
 | Conditions | A formula for a whole category, or only for one department (the department formula wins) |
-| Effective period | Each period stores the formula versions it uses (`periods.formulas`) |
+| Effective period | Start now (open periods with no answers yet, and new periods), or start with the next evaluation period (scheduled) |
 
-**Custom expressions are safe.** They are read by a small built-in calculator that understands only numbers, group
-codes, `+ - * /`, brackets and `avg()`, `min()`, `max()`. Nothing is run with `eval`; code such as
-`process.exit()` or `constructor(1)` is rejected (TC-38).
+**B. Plug-in computation modules (Strategy pattern).** Each method is a separate module in `src/lib/methods/`
+(one file each). The engine gives every module the same input (the groups that take part, each with a rating and a
+weight) and expects the same output (the result, and how it was computed). The engine, the Rating formula page, the
+approval, the versions, the reports and the stored results do not know the math inside a module.
 
-**Versioning and approval.** draft (HR) → submitted with the committee's basis → approved or returned by a VP →
-activated by HR (the previous version is archived). Approved versions cannot be edited; a change is a new version.
-HR cannot approve its own submission. Activating a version applies it to new periods, and to open periods only while
-nobody in that category has been evaluated yet, so results already collected are never silently recomputed.
-Closing a period **stores every result** (`results` table) with its formula version, breakdown and computation steps.
+To support a method evalU does not have yet, a developer:
+1. copies one module file (e.g. `geometric-mean.js`) and writes the new math,
+2. adds it to the list in `src/lib/methods/index.js`.
 
-**Simulation before activation.** The formula page tests a draft with sample scores, with standard cases (each group
-missing in turn, only one group), and on a real closed period (current rating vs. the draft's rating, person by person).
-Nothing is saved by a simulation.
+Nothing else changes. HR then picks it, a VP approves it, and HR starts using it. TC-53 proves this: a new module
+("lowest group rating") is added while the system runs, and it is computed and validated without any change to the
+engine; a module that is missing a part is refused.
 
-**Transparency.** Every result shows "How this rating was computed": formula name and version, each group's score,
-weight, share used and contribution, and the steps.
+**Custom expressions are safe.** They are read by a small built-in calculator (`src/lib/expression.js`) that
+understands only numbers, group codes, `+ - * /`, brackets and `avg()`, `min()`, `max()`. Nothing is run with `eval`;
+code such as `process.exit()` or `constructor(1)` is rejected (TC-38).
 
-Evidence: TC-34 to TC-46 in `docs/test-report.md` (weights 40/40/20 → 30/50/20, simple average, the four missing-group
-rules, custom expression, rounding methods, validation, the approval workflow, versioning, stored results, and a
-department-only formula).
+### Versioning, effective period and reproducibility
+
+- **Approval.** HR cannot approve its own submission; only a VP approves. Approved versions cannot be edited; a change
+  is a new version (TC-41, TC-44).
+- **Effective period.** HR starts an approved version **now**, or sets it to **start with the next evaluation period**
+  (status "Starts next period"). The version in use stays until HR creates that period; the new period then takes the
+  new version and the old one is archived (TC-54). Starting now never touches an open period that already has answers
+  in that category (TC-42).
+- **Stored results.** Closing a period stores every result (`results` table) with the formula identifier and version,
+  its parameters and weights, who approved it and when, its basis, the evaluation period, the ratings used, the final
+  rating, the steps and the date computed (TC-45, TC-55).
+- **Old results stay the same.** On the Rating formula page (card *Check old ratings*), HR clicks **Check now**: every stored rating is computed
+  again with the formula version it was stored with and compared. In the sample data: "All 63 old ratings are
+  unchanged", including after the formula was changed (TC-55).
+
+| Version | Formula | Effective | Status |
+|---|---|---|---|
+| v1 | Weighted 40-40-20 | 2026 periods | Old version (archived) |
+| v2 | Simple average | 2027 periods | In use |
+| v3 | Geometric mean 40-40-20 | next period HR creates | Starts next period |
+
+*(Example of how the Past formulas table reads; the table on screen is built from the database.)*
+
+**Simulation before activation.** "Try it" on the formula page compares the formula in use with the new one on sample
+ratings (now → with this formula, with the computation in numbers) and on a real closed period (how many people would
+get a different rating, and who). Nothing is saved by a simulation.
+
+**Transparency.** Every result shows "How this rating was computed": the formula in words, each group's rating and
+share, and the computation in numbers (for example `40% × 3.50 + 40% × 3.60 + 20% × 3.40 = 3.52`, or
+`3.50^0.40 × 3.60^0.40 × 3.40^0.20 = 3.52` for a geometric mean).
+
+Evidence: TC-34 to TC-48 and TC-51 to TC-55 in `docs/test-report.md`.
+
+Example of why the method matters (TC-51): Students 3.80, Dean 2.00, Program Chair 3.60 with 40/40/20 gives
+**3.04** (weighted average), **2.91** (geometric mean) and **2.77** (harmonic mean). The low Dean rating counts more
+in the stricter methods.
 
 Note on the reviewer's example: with scores 4.30 / 4.50 / 4.10 and weights 30/50/20 the result is
 1.29 + 2.25 + 0.82 = **4.36** (the example in the recommendation says 4.38). The engine gives 4.36 (TC-34).
 
-### Proposed SRS additions (for the manuscript)
-- **FR – Dynamic evaluation computation configuration.** The system shall allow authorized administrators to configure
-  computation methods, evaluator components, weights, aggregation, missing-data handling, conditions and rounding
-  without modifying the application's source code.
-- **FR – Formula version management.** The system shall keep version-controlled formulas with approval records; each
-  evaluation period and each stored result shall reference the formula version used.
-- **NFR – Computational flexibility.** Policy changes shall be made by configuration, provided the operations are
-  supported by the engine.
+### Defense demonstration (about 5 minutes, signed in as HR, then VP)
+
+1. **Current formula.** Rating formula → College faculty: "Final rating = 40% Students + 40% Dean + 20% Program Chair".
+2. **Change the method.** Change this formula → choose *Count every group the same* (simple average).
+3. **Recompute a test evaluation.** In *Try it*, type Students 3.80, Dean 2.00, Program Chair 3.60: now 3.04 → 3.13.
+   Below it, a real closed period shows how many teachers would get a different rating ("See who").
+4. **A different formula module.** Open *Other ways (special cases)* and choose *Percentages, but a low rating counts more* (the geometric mean, a separate module file), show 2.91; open
+   `src/lib/methods/` to show that each method is its own file. Send to VP with the basis; sign in as the VP and approve;
+   sign in as HR and click *Start with the next period*.
+5. **The rest of evalU keeps working.** Periods & release → create the next period: "The new rating formula starts with
+   this period". Generate tasks, reports and printouts work as before.
+6. **History is kept.** Rating formula → *Past formulas* (versions, approved by and date, periods that used each) →
+   *Check old ratings* → **Check now**: "All … old ratings are unchanged."
+
+### Proposed manuscript changes
+
+**New functional requirement – Configurable Computation Engine.** The system shall allow authorized HR administrators
+to select, configure and activate approved performance evaluation computation methods independently of the
+application's core source code. The system shall support configurable computation parameters and preserve versioned
+computation rules to ensure the reproducibility and integrity of historical evaluation results.
+
+| Capability | Where it is in evalU |
+|---|---|
+| 1. Support multiple computation algorithms | Five modules: weighted average, simple average, geometric mean, harmonic mean, custom expression |
+| 2. Configure weights, parameters and aggregation rules | Rating formula page (groups, percentages, averaging, missing groups, minimum groups, rounding, department) |
+| 3. Integrate new computation modules without restructuring the core | `src/lib/methods/`: one file per module plus one line in the list (TC-53) |
+| 4. Maintain computation version history | `formulas` table; *Past formulas* on the page; audit log entries |
+| 5. Associate each finalized result with the computation version used | `results` table: formula, parameters, approval, ratings used, final, steps, date (TC-55) |
+| 6. Validate and simulate proposed changes before activation | Validation before sending; *Try it* on sample ratings and on a real closed period |
+
+FR5 (configurable evaluator weights) and FR13 (weighted score computation) stay; FR13 can say "computed with the
+formula version in force for the period (see the Configurable Computation Engine)".
+
+**Revised objective.** "To design and develop a configurable and extensible performance evaluation computation
+mechanism that accommodates changes in institutional evaluation methodologies without requiring modifications to the
+core system architecture."
+
+**Architecture.** Add the computation management layer (formula versioning, computation engine, algorithm modules)
+between the application/workflow layer and the data and reporting layer, as in the diagram above.
 
 ### Limit (state it honestly)
-A new combination of supported operations needs no programming. A **new kind of operation** the engine does not know
-(for example, a statistical normalisation), or a **new type of evaluator** that does not exist in the system yet
-(a new position), still needs a developer. This is a deliberate security boundary.
+Any new combination of the supported methods, groups, weights and rules needs no programming. A **completely new kind
+of computation** (for example, a statistical normalisation) needs a developer to add **one module file**; the rest of
+the system is not restructured. A **new type of evaluator** that does not exist yet (a new position) also needs a
+developer. No configuration screen can promise every formula the school might invent; the plug-in modules are the
+extension point for those cases.
 
 ## Ideas taken from similar systems
 

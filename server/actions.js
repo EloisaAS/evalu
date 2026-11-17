@@ -6,7 +6,7 @@ import {
   GROUPS, TARGET_TYPES, STAGES, ROLES, POSITIONS, needsDept, uid, userById, periodById, targetType, evaluatorGroups,
   instrumentFor, formForTask, formUsed, effectiveWeights, generateTasks, runThresholdCheck, participationAlerts, sendReminders,
   isInstitutionalEmail, INSTITUTION_DOMAIN, notify, directors, pendingApprovals, resultHeads, hrUsers, isEvaluatee, isTeacher, isNursingDept, stageAtLeast, UB_DEPARTMENTS, missingUbDepartments, MAX_RATING, CLASS_TYPES,
-  currentPolicy, formulaKey, activeFormula, formulaSnapshot, formGroups, validateFormula, computeAll, METHODS, AGGREGATIONS, MISSING_RULES, ROUNDING_METHODS,
+  currentPolicy, formulaKey, activeFormula, formulaSnapshot, formGroups, validateFormula, computeAll, storeResults, methodOf, METHODS, AGGREGATIONS, MISSING_RULES, ROUNDING_METHODS,
 } from '../src/lib/logic.js';
 import { HttpError } from './http.js';
 import { encryptText, decryptText, hashPassword, verifyPassword } from './secrets.js';
@@ -138,21 +138,6 @@ function sectionFields(db, { code, subject, facultyId }, editingId = null) {
 }
 
 // ---------- notifications for the release steps ----------
-/**
- * When a period closes, every final result is stored with the formula version, the breakdown and the steps
- * used to compute it. Later changes to formulas, policies or the program cannot silently change them.
- */
-function storeResults(db, p) {
-  const at = new Date().toISOString();
-  db.results = (db.results || []).filter((r) => r.periodId !== p.id);
-  for (const r of computeAll(db, p.id)) {
-    db.results.push({ periodId: p.id, targetId: r.targetId, data: {
-      final: r.final, status: r.status, basis: r.basis, formula: r.formula, steps: r.steps,
-      groups: Object.fromEntries(Object.entries(r.groups).map(([g, x]) => [g, { score: x.score, weight: x.weight, responded: x.responded, required: x.required }])),
-      breakdown: r.breakdown, computedAt: at,
-    } });
-  }
-}
 
 /** Keep only the parts of a formula the engine understands (never code, never extra fields). */
 function cleanFormula(c = {}) {
@@ -170,6 +155,15 @@ function cleanFormula(c = {}) {
     minGroups: Math.max(1, Math.min(12, Number.parseInt(c.minGroups, 10) || 1)),
     rounding: { decimals: Math.max(0, Math.min(4, Number.parseInt(c.rounding?.decimals, 10) || 0)), method: pick(c.rounding?.method, ROUNDING_METHODS, 'HALF_UP') },
   };
+}
+/** Put an approved formula version in use: the old version of the same category is archived. */
+function putInUse(db, f, user, how = 'activated') {
+  for (const old of db.formulas.filter((x) => x.key === f.key && x.status === 'active')) { old.status = 'archived'; logFormula(old, user, 'archived', `replaced by version ${f.version}`); }
+  f.status = 'active'; f.meta.activatedBy = user.name; f.meta.activatedAt = new Date().toISOString();
+  logFormula(f, user, how);
+  const weights = Object.fromEntries(f.config.components.map((c) => [c.group, methodOf(f.config.method)?.usesWeights ? c.weight : null]));
+  if (!f.dept) db.rules[f.targetType] = weights; // the groups that get tasks (and what the Weights page shows)
+  return weights;
 }
 const formulaRec = (db, id) => (db.formulas || []).find((f) => f.id === id) || fail('Formula not found.', 404);
 const logFormula = (f, user, action, note = '') => { (f.meta.log ||= []).push({ at: new Date().toISOString(), by: user.name, byId: user.id, action, note }); };
@@ -438,8 +432,10 @@ export const actions = {
   /* ---------- HR: evaluation periods & release ---------- */
   createPeriod: {
     roles: HR,
-    run(db, { name, deadline, depts }) {
+    run(db, { name, deadline, depts }, user) {
       const list = Array.isArray(depts) ? [...new Set(depts)].map((d) => find(db.departments, d, 'Department').id) : [];
+      const started = (db.formulas || []).filter((f) => f.status === 'scheduled');
+      for (const f of started) putInUse(db, f, user, 'activated (scheduled for this new period)');
       const p = {
         id: uid('p'), name: text(name, 'Period name', 120), deadline: date(deadline), status: 'open', releaseStage: 'hr', thresholdChecked: false,
         rules: clone(db.rules),   // NFR8: the weights in force for this period
@@ -449,7 +445,7 @@ export const actions = {
         approvals: [], rejections: [],
       };
       db.periods.push(p);
-      return { id: p.id };
+      return { id: p.id, started: started.map((f) => `${f.config.name} v${f.version}`) };
     },
   },
   setPeriodDeadline: {
@@ -738,7 +734,7 @@ export const actions = {
       if (!Object.hasOwn(TARGET_TYPES, tt)) fail('Choose who is evaluated.');
       const d = dept ? find(db.departments, dept, 'Department').id : null;
       const key = formulaKey(tt, d);
-      if (db.formulas.some((f) => f.key === key && ['draft', 'pending', 'rejected', 'approved'].includes(f.status))) fail('This category already has a version in progress. Finish or delete it first.', 409);
+      if (db.formulas.some((f) => f.key === key && ['draft', 'pending', 'rejected', 'approved', 'scheduled'].includes(f.status))) fail('This category already has a version in progress. Finish or delete it first.', 409);
       const version = Math.max(0, ...db.formulas.filter((f) => f.key === key).map((f) => f.version)) + 1;
       const f = { id: uid('fx'), key, targetType: tt, dept: d, version, status: 'draft', config: clean, meta: { createdBy: user.name, createdAt: new Date().toISOString(), log: [] } };
       logFormula(f, user, 'created');
@@ -794,15 +790,20 @@ export const actions = {
   },
   activateFormula: {
     roles: HR,
-    run(db, { id }, user) {
+    // when: 'now' (open periods with no answers in this category and every new period), or
+    // 'next' (scheduled: it starts when HR creates the next evaluation period; open periods keep theirs)
+    run(db, { id, when = 'now' }, user) {
       const f = formulaRec(db, id);
-      if (f.status !== 'approved') fail('Only an approved formula can be activated.', 409);
-      for (const old of db.formulas.filter((x) => x.key === f.key && x.status === 'active')) { old.status = 'archived'; logFormula(old, user, 'archived', `replaced by version ${f.version}`); }
-      f.status = 'active'; f.meta.activatedBy = user.name; f.meta.activatedAt = new Date().toISOString();
-      logFormula(f, user, 'activated');
+      if (!['approved', 'scheduled'].includes(f.status)) fail('Only an approved formula can be activated.', 409);
+      if (when === 'next') {
+        if (f.status === 'scheduled') fail('This formula is already set to start with the next evaluation period.', 409);
+        f.status = 'scheduled'; f.meta.scheduledBy = user.name; f.meta.scheduledAt = new Date().toISOString();
+        logFormula(f, user, 'scheduled', 'starts with the next evaluation period');
+        return { version: f.version, scheduled: true };
+      }
+      if (when !== 'now') fail('Choose when the formula starts.');
       const snap = formulaSnapshot(f);
-      const weights = Object.fromEntries(f.config.components.map((c) => [c.group, f.config.method === 'WEIGHTED_AVERAGE' ? c.weight : null]));
-      if (!f.dept) db.rules[f.targetType] = weights; // the groups that get tasks (and what the Weights page shows)
+      const weights = putInUse(db, f, user);
       // open periods take the new version only while nobody in that category has been evaluated yet,
       // so results already collected are never computed differently without notice
       let applied = 0, kept = 0;
@@ -959,7 +960,8 @@ export function describeAction(name, args, db, result) {
   if (name === 'changePassword') return 'Changed own password';
   // before → after values, so every rule change can be traced
   if (name === 'setPolicy' && result?.changed) return `policy version ${result.version}: ${result.changed.map((c) => `${c.field} ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`).join('; ')} · reason: ${args.reason}`;
-  if (/Formula/.test(name)) { const f = (db.formulas || []).find((x) => x.id === (args.id || result?.id)); const tag = f ? `formula: ${f.config.name} v${f.version} (${TARGET_TYPES[f.targetType]}${f.dept ? ', ' + f.dept : ''}) · status: ${f.status}` : (result?.deleted ? `formula: ${result.deleted}` : 'formula'); return [tag, args.basis && `basis: ${args.basis}`, args.reason && `reason: ${args.reason}`, result?.applied != null && `applied to ${result.applied} open period(s), ${result.kept} kept the previous version`].filter(Boolean).join(' · '); }
+  if (/Formula/.test(name)) { const f = (db.formulas || []).find((x) => x.id === (args.id || result?.id)); const tag = f ? `formula: ${f.config.name} v${f.version} (${TARGET_TYPES[f.targetType]}${f.dept ? ', ' + f.dept : ''}) · status: ${f.status}` : (result?.deleted ? `formula: ${result.deleted}` : 'formula'); return [tag, args.basis && `basis: ${args.basis}`, args.reason && `reason: ${args.reason}`, result?.applied != null && `applied to ${result.applied} open period(s), ${result.kept} kept the previous version`, result?.scheduled && 'starts with the next evaluation period'].filter(Boolean).join(' · '); }
+  if (name === 'createPeriod' && result?.started?.length) return `name: ${args.name} · formula(s) started with this period: ${result.started.join(', ')}`;
   if (name === 'returnToHR') { const per = periodById(db, args.periodId); return `period: ${per?.name} · returned to HR · reason: ${args.reason}`; }
   const parts = [];
   const a = args || {};

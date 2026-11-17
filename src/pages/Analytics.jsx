@@ -125,7 +125,7 @@ function PeriodCompare({ db, periods, data, dept }) {
       <Source>
         <li>Final ratings of the same people in both periods (only people with a final rating in both).</li>
         <li>Change = final rating in the second period − final rating in the first.</li>
-        <li>The warning compares each period's policy version, group weights and the form versions used in the answers.</li>
+        <li>The warning compares each period's rules, group percentages and the form versions used in the answers.</li>
       </Source>
     </Card>
   );
@@ -217,7 +217,7 @@ export default function Analytics() {
   if (classes) findings.push({ text: `${excluded} of ${classes} classes were excluded for low participation${lowPart ? `; the lowest response rate is ${lowPart.department} (${pct(lowPart.rate)})` : ''}.`, action: excluded ? 'Send reminders earlier next period, or ask advisers to give class time for the evaluation.' : 'Participation was enough in every class.', from: 'Participation' });
   if (cats.length) findings.push({ text: `Weakest category: "${cats[0].category}" (${GROUPS[cats[0].group]}, average ${fmt(cats[0].mean)}).`, action: 'A possible topic for training or an in-service seminar (INSET).', from: 'Strengths and weaknesses' });
   const consistent = items.filter((i) => i.consistent);
-  if (consistent.length) findings.push({ text: `${consistent.length} item(s) were low in this period and the one before, e.g. "${text(consistent[0].criterionId)}".`, action: 'Low twice in a row suggests a lasting need rather than a one-time result.', from: 'Item-level results' });
+  if (consistent.length) findings.push({ text: `${consistent.length} question(s) were low in this period and the one before, e.g. "${text(consistent[0].criterionId)}".`, action: 'Low twice in a row suggests a lasting need rather than a one-time result.', from: 'Item-level results' });
   const worstTopic = [...csum.topics].filter((x) => x.negative).sort((a, b) => b.negative - a.negative)[0];
   if (worstTopic) findings.push({ text: `In the written comments, "${worstTopic.label}" has the most negative or mixed remarks (${worstTopic.negative} of ${worstTopic.count}).`, action: 'Read those comments (Reports → All comments) and consider it for coaching or training.', from: 'What the comments are about' });
   if (gaps.length) findings.push({ text: `${bigGaps.length} of ${gaps.length} people have a gap of 0.50 or more between evaluator groups.`, action: bigGaps.length ? 'Review these with the dean: the groups see the person differently (e.g. classroom vs. compliance).' : 'Evaluator groups broadly agree.', from: 'Evaluator agreement' });
@@ -232,7 +232,7 @@ export default function Analytics() {
   return (
     <>
       <div className="row between">
-        <p className="muted" style={{ margin: 0 }}>Descriptive analytics: what happened in the released evaluations. Each card shows <b>where its numbers come from</b>.</p>
+        <p className="muted" style={{ margin: 0 }}>What happened in the released evaluations. Each card shows <b>where its numbers come from</b>.</p>
         {filters}
       </div>
 
@@ -321,7 +321,7 @@ export default function Analytics() {
         </Source>
       </Card>
 
-      <Card title="Evaluator agreement">
+      <Card title="Do the evaluator groups agree?">
         <p className="muted">Where the evaluator groups rate the same person differently ({period?.name}). A gap of 0.50 or more is flagged.</p>
         {gaps.length === 0 ? <p className="muted">No one was rated by two or more groups.</p> : (
           <table><thead><tr><th>Name</th><th>Ratings by group</th><th>Gap</th></tr></thead>
@@ -340,11 +340,11 @@ export default function Analytics() {
 
       <PeriodCompare db={db} periods={periods} data={data} dept={dept} />
 
-      <Card title="Item-level results">
-        <p className="muted">Each evaluation item, lowest first. Items averaging below <b>{pol.lowItem.toFixed(2)}</b> (the cutoff in Policy &amp; rules for this period) are flagged; <b>consistently low</b> means it was also low in the previous period.</p>
+      <Card title="Results per question">
+        <p className="muted">Each question, lowest first. Questions averaging below <b>{pol.lowItem.toFixed(2)}</b> (the low question line in Policy &amp; rules) are flagged; <b>consistently low</b> means it was also low in the previous period.</p>
         {items.length === 0 ? <p className="muted">No item results for this selection.</p> : (
           <table className="items">
-            <thead><tr><th>Item</th><th>Evaluator group</th><th>Mean</th><th>Previous period</th><th>Answers</th><th>Flag</th></tr></thead>
+            <thead><tr><th>Question</th><th>Evaluator group</th><th>Average</th><th>Previous period</th><th>Answers</th><th>Flag</th></tr></thead>
             <tbody>{items.map((r) => (
               <tr key={r.group + r.criterionId} className={r.low ? 'low' : ''}>
                 <td>{text(r.criterionId)}</td><td>{GROUPS[r.group]}</td><td><b>{fmt(r.mean)}</b></td><td>{fmt(r.prev)}</td><td>{r.n}</td>
@@ -354,7 +354,7 @@ export default function Analytics() {
           </table>
         )}
         <Source>
-          <li>Mean of each question's answers in the evaluations that count, per evaluator group.</li>
+          <li>Average of each question's answers in the evaluations that count, per evaluator group.</li>
           <li>"Previous period" is the period released just before the selected one.</li>
           <li>The cutoff comes from the period's policy (Policy &amp; rules), not a fixed number in the code.</li>
         </Source>

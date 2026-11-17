@@ -1,11 +1,12 @@
 # evalU validation test report
 
-Run: 2026-11-16T05:40:04.192Z · Node v24.21.0 · code version e4be7be · fresh test database with the sample data
+Run: 2026-11-17T19:54:06.555Z · Node v24.21.0 · code version 5f3b914 · fresh test database with the sample data
 
-**Result: 50 of 50 test cases passed.**
+**Result: 55 of 55 test cases passed.**
 
 Each case runs automatically (`npm run test:validation`). "Actual" is measured during this run, not written by hand.
-Part A checks the computation rules on controlled data; Part B runs the real server, database and access control.
+Part A checks the computation rules on controlled data; Part B runs the real server, database and access control;
+Part C checks the formula engine and its approval and versions; Part D the comment analysis; Part E the computation modules (plug-ins), the effective period and the reproducibility of stored results.
 
 | ID | Requirement | Scenario | Expected | Actual | Result |
 |---|---|---|---|---|---|
@@ -59,5 +60,10 @@ Part A checks the computation rules on controlled data; Part B runs the real ser
 | TC-48 | Blank formula | HR starts a blank formula and tries to send it without choosing anything | HTTP 400 (must choose method, groups and missing-group rule) | HTTP 400 (must choose method, groups and missing-group rule) | PASS |
 | TC-49 | Comment analysis (sentiment) | English, Filipino and Taglish comments, with "not/hindi" and "never late" | ["positive","negative","mixed","negative","positive","neutral"] | ["positive","negative","mixed","negative","positive","neutral"] | PASS |
 | TC-50 | Comment analysis (topics, suggestions) | "Please give feedback on our work sooner." / "The lessons are clear and well prepared." | [{"suggestion":true,"topics":["feedback"]},{"suggestion":false,"topics":["clarity","preparation"]}] | [{"suggestion":true,"topics":["feedback"]},{"suggestion":false,"topics":["clarity","preparation"]}] | PASS |
+| TC-51 | Computation modules | Same answers (Dean low), 40/40/20 with weighted average, geometric mean, harmonic mean | [3.04,2.91,2.77] | [3.04,2.91,2.77] | PASS |
+| TC-52 | Computation modules | "Count it as 0" with a harmonic mean (would divide by zero); with a geometric mean (every rating would be 0) | 2 | 2 | PASS |
+| TC-53 | Plug-in architecture | A new module ("lowest group rating") is registered without changing the engine; an incomplete module is refused | {"accepted":true,"final":2,"valid":true,"incompleteRefused":true} | {"accepted":true,"final":2,"valid":true,"incompleteRefused":true} | PASS |
+| TC-54 | Effective period | An approved geometric-mean formula set to "start with the next period"; then HR creates the next period | {"whileScheduled":"old formula in use","newPeriod":"new formula","oldVersion":"archived"} | {"whileScheduled":"old formula in use","newPeriod":"new formula","oldVersion":"archived"} | PASS |
+| TC-55 | Reproducible results | Close a period computed with an approved formula; then recompute every stored result with the formula version stored with it | {"keepsFormula":true,"keepsApproval":true,"allSame":true} | {"keepsFormula":true,"keepsApproval":true,"allSame":true} | PASS |
 
 Limits of this report: these are developer-run functional, security and integration tests on simulated data. They do not replace the stakeholder evaluation (ISO/IEC 25010 questionnaire) or confirmation of the rules by HRMC.

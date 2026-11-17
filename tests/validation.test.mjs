@@ -256,6 +256,49 @@ try {
   const COMMENTS = ['Very clear explanation and approachable.', 'Always late and does not return our quizzes.', 'Magaling magturo pero minsan late.', 'Hindi malinaw ang paliwanag.', 'She is never late and always prepared.', 'N/A'];
   await tc('TC-49', 'Comment analysis (sentiment)', 'English, Filipino and Taglish comments, with "not/hindi" and "never late"', ['positive', 'negative', 'mixed', 'negative', 'positive', 'neutral'], () => COMMENTS.map((c) => C.analyzeComment(c).sentiment));
   await tc('TC-50', 'Comment analysis (topics, suggestions)', '"Please give feedback on our work sooner." / "The lessons are clear and well prepared."', [{ suggestion: true, topics: ['feedback'] }, { suggestion: false, topics: ['clarity', 'preparation'] }], () => ['Please give feedback on our work sooner.', 'The lessons are clear and well prepared.'].map((c) => { const a = C.analyzeComment(c); return { suggestion: a.suggestion, topics: a.topics }; }));
+
+  /* ---------------- Part E: algorithm-independent computation (computation modules) ---------------- */
+  const LOW = { ST: 3.8, DEAN: 2.0, CHAIR: 3.6 }; // one low group
+  await tc('TC-51', 'Computation modules', 'Same answers (Dean low), 40/40/20 with weighted average, geometric mean, harmonic mean', [3.04, 2.91, 2.77],
+    () => ['WEIGHTED_AVERAGE', 'GEOMETRIC_MEAN', 'HARMONIC_MEAN'].map((m) => F.computeFinal({ ...base, method: m }, LOW).final));
+  await tc('TC-52', 'Computation modules', '"Count it as 0" with a harmonic mean (would divide by zero); with a geometric mean (every rating would be 0)', 2,
+    () => ['HARMONIC_MEAN', 'GEOMETRIC_MEAN'].filter((m) => F.validateFormula({ ...base, method: m, missing: 'ZERO' }).some((e) => /does not work/.test(e))).length, (n) => n === 2);
+  await tc('TC-53', 'Plug-in architecture', 'A new module ("lowest group rating") is registered without changing the engine; an incomplete module is refused', { accepted: true, final: 2, valid: true, incompleteRefused: true }, () => {
+    F.registerMethod({ id: 'TEST_LOWEST', label: 'Lowest group (test module)', missingRules: ['REWEIGHT', 'INVALIDATE'], compute: (items) => ({ raw: Math.min(...items.map((x) => x.value)), how: `lowest of ${items.map((x) => x.value).join(', ')}` }), words: () => 'Final rating = the lowest group rating', symbols: (cs) => `F = min(${cs.map((c) => c.group).join(', ')})` });
+    let incompleteRefused = false;
+    try { F.registerMethod({ id: 'TEST_BROKEN', label: 'No compute' }); } catch { incompleteRefused = true; }
+    const f = { ...base, method: 'TEST_LOWEST' };
+    return { accepted: 'TEST_LOWEST' in F.METHODS, final: F.computeFinal(f, LOW).final, valid: F.validateFormula(f).length === 0, incompleteRefused };
+  });
+  let fx2;
+  await tc('TC-54', 'Effective period', 'An approved geometric-mean formula set to "start with the next period"; then HR creates the next period', { whileScheduled: 'old formula in use', newPeriod: 'new formula', oldVersion: 'archived' }, async () => {
+    fx2 = (await act(hr, 'saveFormulaDraft', { targetType: 'COLLEGE_FACULTY', config: { ...base, name: 'College faculty (geometric mean)', method: 'GEOMETRIC_MEAN' } })).data.result.id;
+    await act(hr, 'submitFormula', { id: fx2, basis: 'Validation test: policy for next school year' });
+    await act(vp, 'approveFormula', { id: fx2 });
+    await act(hr, 'activateFormula', { id: fx2, when: 'next' });
+    const d1 = (await call('/api/data', { cookie: hr })).data;
+    const whileScheduled = L.activeFormula(d1, 'COLLEGE_FACULTY')?.id === fxId && d1.formulas.find((x) => x.id === fx2).status === 'scheduled' && !d1.periods.some((p) => p.formulas?.COLLEGE_FACULTY?.id === fx2);
+    const r = await act(hr, 'createPeriod', { name: 'AY 2028-29 Term 1 (validation)', deadline: '2099-12-31' });
+    const d2 = (await call('/api/data', { cookie: hr })).data;
+    return {
+      whileScheduled: whileScheduled ? 'old formula in use' : 'changed too early',
+      newPeriod: d2.periods.find((x) => x.id === r.data.result.id).formulas?.COLLEGE_FACULTY?.id === fx2 ? 'new formula' : 'old formula',
+      oldVersion: d2.formulas.find((x) => x.id === fxId).status,
+    };
+  });
+  await tc('TC-55', 'Reproducible results', 'Close a period computed with an approved formula; then recompute every stored result with the formula version stored with it', { keepsFormula: true, keepsApproval: true, allSame: true }, async () => {
+    const d0 = (await call('/api/data', { cookie: hr })).data;
+    const p = d0.periods.find((x) => x.status === 'open' && x.formulas?.COLLEGE_FACULTY?.id === fxId);
+    await act(hr, 'closePeriod', { periodId: p.id });
+    const d = (await call('/api/data', { cookie: hr })).data;
+    const rows = d.results.filter((r) => r.periodId === p.id && r.data.formula.key === 'COLLEGE_FACULTY');
+    const again = (r) => F.computeFinal(r.data.formula, Object.fromEntries(Object.entries(r.data.groups).map(([g, x]) => [g, x.score ?? null]))).final;
+    return {
+      keepsFormula: rows.length > 0 && rows.every((r) => r.data.formula.id === fxId && r.data.formula.method === 'AVERAGE' && Array.isArray(r.data.formula.components)),
+      keepsApproval: rows.every((r) => r.data.formula.approvedBy && r.data.formula.approvedAt && r.data.formula.basis),
+      allSame: d.results.filter((r) => Array.isArray(r.data.formula?.components)).every((r) => again(r) === r.data.final),
+    };
+  });
 } finally {
   server.close();
 }
@@ -271,7 +314,8 @@ const md = [
   `**Result: ${passed} of ${results.length} test cases passed.**`,
   '',
   'Each case runs automatically (`npm run test:validation`). "Actual" is measured during this run, not written by hand.',
-  'Part A checks the computation rules on controlled data; Part B runs the real server, database and access control.',
+  'Part A checks the computation rules on controlled data; Part B runs the real server, database and access control;',
+  'Part C checks the formula engine and its approval and versions; Part D the comment analysis; Part E the computation modules (plug-ins), the effective period and the reproducibility of stored results.',
   '',
   '| ID | Requirement | Scenario | Expected | Actual | Result |',
   '|---|---|---|---|---|---|',

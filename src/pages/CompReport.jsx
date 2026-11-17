@@ -82,7 +82,7 @@ export function CompSheet({ res, period, ctrl, db }) {
       <div className="comp-foot">
         <div>
           <p>This copy is computer generated form, if issued without alteration, this does not require signature.</p>
-          {res.status === 'reweighted' && <p className="comp-note">Computed over {res.basis}%: no valid result from {res.missing.map((g) => GROUPS[g]).join(', ')}.</p>}
+          {res.status === 'reweighted' && <p className="comp-note">No rating from {res.missing.map((g) => GROUPS[g]).join(', ')}, so the final rating uses the other groups ({res.basis}% of the weight).</p>}
         </div>
         <table className="comp-key">
           <thead><tr><th colSpan={2}>RATING INTERPRETATION</th></tr></thead>

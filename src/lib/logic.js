@@ -15,8 +15,8 @@ export const THRESHOLD = 0.5;           // the line drawn on progress bars (the 
 export const LOW_ITEM = 3.0;            // FR19: items averaging below "Satisfactory" (UB's 4-point scale) are flagged
 export { MAX_RATING, SCALES, CLASS_TYPES } from './ubForms.js';
 import { MAX_RATING, SCALES } from './ubForms.js';
-import { defaultFormula, computeFinal } from './formula.js';
-export { METHODS, AGGREGATIONS, MISSING_RULES, ROUNDING_METHODS, roundBy, parseExpression, validateFormula, computeFinal, defaultFormula, formulaText, formulaWords, howInWords } from './formula.js';
+import { defaultFormula, computeFinal, methodOf } from './formula.js';
+export { METHODS, AGGREGATIONS, MISSING_RULES, ROUNDING_METHODS, roundBy, parseExpression, validateFormula, computeFinal, defaultFormula, formulaText, formulaWords, howInWords, methodOf, methodList } from './formula.js';
 
 /* ---------- evaluation policy (HR changes it without a programmer; each period keeps the version it used) ---------- */
 /**
@@ -332,7 +332,8 @@ export function computeTarget(db, periodId, targetId, opts = {}) {
   const comps = f.components || [];
   const groups = {};
   const sections = [];
-  const shown = (c) => (f.method === 'WEIGHTED_AVERAGE' ? c.weight : f.method === 'AVERAGE' ? +(100 / comps.length).toFixed(2) : null);
+  const m = methodOf(f.method);
+  const shown = (c) => (m?.usesWeights ? c.weight : m?.equalShares ? +(100 / comps.length).toFixed(2) : null);
   for (const c of comps) {
     const g = c.group;
     const tasks = db.tasks.filter((t) => t.periodId === periodId && t.targetId === targetId && t.group === g);
@@ -352,13 +353,14 @@ export function computeTarget(db, periodId, targetId, opts = {}) {
       groups[g] = { weight: shown(c), score: c.aggregation === 'MEDIAN' ? median(scores) : mean(scores), required: tasks.length, responded: done.length, aggregation: c.aggregation };
     }
   }
-  const missingW = f.method === 'WEIGHTED_AVERAGE' ? comps.filter((c) => c.weight == null || c.weight === '').map((c) => c.group) : [];
-  const total = f.method === 'WEIGHTED_AVERAGE' ? comps.reduce((a, c) => a + (Number(c.weight) || 0), 0) : 100;
+  const missingW = m?.usesWeights ? comps.filter((c) => c.weight == null || c.weight === '').map((c) => c.group) : [];
+  const total = m?.usesWeights ? comps.reduce((a, c) => a + (Number(c.weight) || 0), 0) : 100;
   const r = computeFinal(f, Object.fromEntries(Object.entries(groups).map(([g, x]) => [g, x.score])));
   return {
     targetId, target, type: tt, groups, sections, final: r.final, status: r.status, missing: r.missing, missingW, basis: r.basis, total,
-    formula: { id: f.id || null, key: f.key || tt, name: f.name, version: f.version ?? 0, method: f.method, missing: f.missing, rounding: f.rounding },
-    breakdown: r.breakdown, steps: r.steps,
+    // the whole formula version is kept with the result, so it can be recomputed exactly later
+    formula: { id: f.id || null, key: f.key || tt, name: f.name, version: f.version ?? 0, method: f.method, components: comps.map((c) => ({ group: c.group, weight: c.weight ?? null, aggregation: c.aggregation })), expression: f.expression || '', missing: f.missing, minGroups: f.minGroups ?? 1, rounding: f.rounding },
+    breakdown: r.breakdown, steps: r.steps, how: r.how,
   };
 }
 /** A result that has a final score (complete, or re-weighted because a group is missing). */
@@ -370,6 +372,26 @@ export function targetsOf(db) {
 
 export function computeAll(db, periodId) {
   return targetsOf(db).map((u) => computeTarget(db, periodId, u.id));
+}
+
+/**
+ * When a period closes, every final result is stored with the formula version (its parameters and its
+ * approval), the ratings used, the breakdown and the steps. Later changes to formulas, policies or the
+ * program cannot silently change them, and each can be computed again exactly (reproducibility).
+ */
+export function storeResults(db, p) {
+  const at = new Date().toISOString();
+  db.results = (db.results || []).filter((r) => r.periodId !== p.id);
+  for (const r of computeAll(db, p.id)) {
+    const rec = r.formula.id && (db.formulas || []).find((f) => f.id === r.formula.id);
+    db.results.push({ periodId: p.id, targetId: r.targetId, data: {
+      final: r.final, status: r.status, basis: r.basis, steps: r.steps, how: r.how,
+      // the formula version with its parameters, and its approval (the starting formula has none)
+      formula: { ...r.formula, approvedBy: rec?.meta.approvedBy || null, approvedAt: rec?.meta.approvedAt || null, basis: rec?.meta.basis || null },
+      groups: Object.fromEntries(Object.entries(r.groups).map(([g, x]) => [g, { score: x.score, weight: x.weight, responded: x.responded, required: x.required }])),
+      breakdown: r.breakdown, computedAt: at,
+    } });
+  }
 }
 
 /**
@@ -469,7 +491,7 @@ function participationNotices(draft, periodId, final) {
     for (const h of deptHeads(draft, dept)) {
       notify(draft, {
         key: `${tag}|dept|${dept}|${h.id}`, userId: h.id, kind,
-        text: `${final ? `${p.name} was closed. These classes in your department are excluded` : `${list.length} class(es) in your department are at or below half for ${p.name}`}: ${list.map(line).join('; ')}.`,
+        text: `${final ? `${p.name} was closed. These classes in your department are excluded` : `${list.length} class(es) in your department do not have enough answers yet for ${p.name} (half of the class plus one)`}: ${list.map(line).join('; ')}.`,
       });
     }
   }
@@ -477,7 +499,7 @@ function participationNotices(draft, periodId, final) {
     for (const h of hrUsers(draft)) {
       notify(draft, {
         key: `${tag}|hr|${h.id}`, userId: h.id, kind,
-        text: `${p.name}: ${low.length} class(es) ${final ? 'were excluded because' : 'are at or below half;'} fewer than half of the class plus one answered. ${low.slice(0, 5).map(line).join('; ')}${low.length > 5 ? `; and ${low.length - 5} more` : ''}.`,
+        text: `${p.name}: ${low.length} class(es) ${final ? 'were excluded because' : 'do not have enough answers yet:'} fewer than half of the class plus one answered. ${low.slice(0, 5).map(line).join('; ')}${low.length > 5 ? `; and ${low.length - 5} more` : ''}.`,
       });
     }
   }

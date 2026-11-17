@@ -44,8 +44,9 @@ export function Periods() {
   const exists = periodExists(db, pick.ay, pick.term);
   const add = async () => {
     if (exists) return setMsg(`${name} already exists.`);
-    if (await act('createPeriod', { name, deadline, depts })) {
-      setDepts([]); setMsg(`${name} created. Go to Assignments and click "Generate tasks for period".`);
+    const r = await act('createPeriod', { name, deadline, depts });
+    if (r) {
+      setDepts([]); setMsg(`${name} created.${r.started?.length ? ` The new rating formula starts with this period: ${r.started.join(', ')}.` : ''} Go to Assignments and click "Generate tasks for period".`);
       // suggest the following term next time
       const ys = schoolYears();
       setPick(pick.term === 'Term 1' ? { ay: pick.ay, term: 'Term 2' } : { ay: ys[Math.min(ys.indexOf(pick.ay) + 1, ys.length - 1)], term: 'Term 1' });
@@ -72,7 +73,7 @@ export function Periods() {
                   <td><Badge kind={p.status === 'open' ? 'pending' : 'completed'}>{p.status}</Badge></td>
                   <td>{STAGE_LABEL[p.releaseStage]}{p.releaseStage === 'dir' && <><br /><span className="muted">{waiting.length ? `Waiting for approval (${approvalRuleText(db, p)}): ${waiting.map((u) => u.name).join(', ')}` : 'Enough VPs approved'}</span></>}
                     {p.rejections?.length > 0 && p.releaseStage === 'hr' && <><br /><Badge kind="overdue">returned by {p.rejections.at(-1).name}</Badge> <span className="muted small">"{p.rejections.at(-1).reason}"</span></>}
-                    <br /><span className="muted small">Rules: policy v{policyFor(db, p.id).version ?? 0}{p.status === 'open' ? ' (follows changes)' : ' (fixed)'}</span></td>
+                    <br /><span className="muted small">Rules: {policyFor(db, p.id).version ? `version ${policyFor(db, p.id).version}` : "UB's starting rules"}{p.status === 'open' ? ' (changes apply)' : ' (locked)'}</span></td>
                   <td className="row">
                     {p.status === 'open' && <button onClick={async () => { if (await ask(`Close ${p.name}?`, 'Classes where fewer than half of the class plus one answered will be excluded, and everyone concerned is notified.', { ok: 'Close period' })) run('closePeriod', p.id, (r) => `${p.name} closed. ${r.flagged} class(es) were excluded (below half + 1); the faculty, department heads and HR were notified.`); }}>Close period</button>}
                     {p.status === 'open' && <button className="ghost" onClick={async () => (await ask('Send participation alerts?', 'Teachers and department heads of classes below half + 1 are notified now.', { ok: 'Send alerts' })) && run('checkThreshold', p.id, (r) => (r.flagged ? `${r.flagged} class(es) are at or below half. The faculty, their department heads and HR were notified.` : 'Every class has enough responses so far.'))}>Send participation alerts</button>}
@@ -170,6 +171,7 @@ export function Assignments() {
           <button onClick={async () => { const r = await act('generateTasks', { periodId: pid }); if (r) setMsg(`${r.added} task(s) generated from the class lists and the role, position and department rules.${r.skippedNoForm ? ` ${r.skippedNoForm} skipped because no form exists.` : ''} Internship, practicum and field trip subjects were skipped.`); }}>Generate tasks for period</button>
           <button className="ghost" onClick={async () => { const r = await act('sendReminders', { periodId: pid }); if (r) setMsg(`Reminders sent to ${r.sent} evaluator(s) with unfinished evaluations. Their department heads and HR were alerted too.`); }}>Send reminders now</button>
         </div>
+        <p className="muted"><b>Generate tasks</b> makes the list of who evaluates whom in this period: students from the class lists, and deans, chairs and staff from their positions. Do it once after you create the period and import the class lists. Doing it again only adds what is new.</p>
         <p className="muted">Reminders are also sent automatically once a day during the last 7 days before the deadline, and every day after it until the period is closed.</p>
         <table>
           <thead><tr><th>Evaluator group</th><th>Pending</th><th>Completed</th><th>Overdue</th></tr></thead>
@@ -243,7 +245,7 @@ export function Classes() {
       <div className="note">Class lists and teaching loads come from the Registrar / ARC. Students evaluate the teacher of each class they are enrolled in. <b>Internship, practicum and field trip subjects are kept on the list but are not evaluated</b> (recognised from the subject name).</div>
       {msg && <div className="note">{msg}</div>}
       <Card title="Import a class list">
-        <p className="muted">Choose the CSV file exported from the Registrar/ARC (or paste it below), one student per line:</p>
+        <p className="muted">Choose the class list file from the Registrar/ARC, or paste it below. It must be a CSV file (in Excel: <b>File → Save As → CSV</b>). One student per line, in this order:</p>
         <p><code>section code, subject, teacher name, teacher email, student ID, student name, student UB email</code></p>
         <p className="muted">Classes that don't exist yet are created. <b>Teachers and students who don't have an account yet get one automatically</b> in the department you choose. A student's first password is their <b>student ID</b>; a teacher's is the part of their email before the @ (for example <code>jdelacruz</code>). Everyone must change it when they first sign in. People who already have an account are just added to the class. Rows with a problem are listed and skipped.</p>
         <div className="row">
@@ -511,8 +513,8 @@ export function Weights() {
   const { db, act } = useApp();
   return (
     <Card title="Evaluator-group weights (%)">
-      <p className="muted">From Table 6 of the manuscript: College faculty — Students 40, Dean 40, Program Chair 20; Basic Education — Students 40, Principal 20, Assistant Principal 20, Subject Head 20; non-teaching personnel are evaluated by one group (head ↔ staff); Clinical Instructors (CIs) — Students 50, Dean 50 until the official weights are given. Weights for evaluating Deans are not given, so HR must enter them. <b>Changes apply to open and future periods; closed periods keep the weights they were computed with.</b> If a group has no valid result, its weight is removed and the score is computed over the rest.</p>
-      <p className="muted">This page is the quick way to set weights (a weighted average). To change the <b>method</b> (simple average, custom expression), the missing-group rule, how evaluators are combined, or the rounding, and to keep approved versions, use <b>Rating formula</b>. Once a category has an active formula, its weights are managed there.</p>
+      <p className="muted">Starting percentages: College faculty — Students 40, Dean 40, Program Chair 20; Basic Education — Students 40, Principal 20, Assistant Principal 20, Subject Head 20; non-teaching staff and their office heads rate each other; Clinical Instructors (CIs) — Students 50, Dean 50 until UB gives the official ones. Deans have no starting percentages, so enter them. <b>A change applies to open and new periods; closed periods keep their old percentages.</b> If a group gives no rating, the other groups are used.</p>
+      <p className="muted">This page is the quick way to change the percentages. To change <b>how</b> the final rating is computed (for example, every group counts the same), use <b>Rating formula</b>. Once a group of people has a formula there, its percentages are changed there.</p>
       {Object.entries(db.rules).map(([tt, rule]) => {
         const total = Object.values(rule).reduce((a, w) => a + (Number(w) || 0), 0);
         const af = activeFormula(db, tt);
@@ -653,10 +655,11 @@ export function AuditLog() {
   const page = usePages(list, `${kind}|${s}`);
   if (user.role !== 'HR') return null;
   return (
-    <Card title="Audit log" actions={<span className="row" style={{ margin: 0 }}><button className="ghost" onClick={exportCsv} disabled={!list.length}>Export CSV</button><button className="ghost" onClick={load}>Refresh</button><button onClick={verify}>Verify integrity</button></span>}>
-      <p className="muted">Every view, change and release of results is recorded with who did it and when, with before → after values for rule changes. Each entry is sealed with a SHA-256 hash that includes the previous entry, so editing or deleting an entry directly in the database breaks the chain. <b>Verify integrity</b> recomputes the whole chain.</p>
+    <Card title="Audit log" actions={<span className="row" style={{ margin: 0 }}><button className="ghost" onClick={exportCsv} disabled={!list.length}>Download for Excel</button><button className="ghost" onClick={load}>Refresh</button><button onClick={verify}>Check for tampering</button></span>}>
+      <p className="muted">Every view, change and release of results is recorded: who did it, when, and the old and new value when a rule changes. The log is sealed. If someone edits or deletes an entry directly in the database, <b>Check for tampering</b> shows where.</p>
+      <details className="source"><summary>How the seal works</summary><p>Each entry is sealed with a SHA-256 hash that includes the previous entry's hash (a hash chain), so changing or deleting any entry breaks every seal after it. "Check for tampering" recomputes the whole chain.</p></details>
       {check?.busy && <div className="note">Checking every entry…</div>}
-      {check?.ok === true && <div className="note ok"><b>Intact.</b> All {check.checked} entries match their hashes; nothing was changed or deleted.</div>}
+      {check?.ok === true && <div className="note ok"><b>No tampering.</b> All {check.checked} entries are exactly as they were recorded.</div>}
       {check?.ok === false && <div className="note warn"><b>Tampering detected</b> at entry #{check.firstBad.id} ({new Date(check.firstBad.at).toLocaleString()}): {check.firstBad.reason}. {check.checked - 1} entries before it are intact.</div>}
       {check?.error && <div className="note warn">{check.error}</div>}
       <div className="row">

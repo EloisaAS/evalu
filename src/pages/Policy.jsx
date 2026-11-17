@@ -6,7 +6,7 @@ import { currentPolicy, neededResponses, bandTable, interpretation, DEFAULT_POLI
 import { Card, Select, Badge, ask } from '../ui';
 
 const FIELD = {
-  participationPercent: 'Participation %', participationPlusOne: 'Plus one', bands: 'Rating bands', lowItem: 'Low-item cutoff',
+  participationPercent: 'Participation %', participationPlusOne: 'Plus one', bands: 'What each rating means', lowItem: 'Low question line',
   decimals: 'Decimal places', missingGroup: 'Missing evaluator group', minAnonymity: 'Minimum students for comments',
   approvalMode: 'VP approvals needed', approvalCount: 'Number of VPs',
 };
@@ -44,8 +44,8 @@ export default function Policy() {
   return (
     <>
       {msg && <div className="note ok">{msg}</div>}
-      <Card title={`Evaluation rules · ${version ? `version ${version}` : 'UB defaults (version 0)'}`}>
-        <p className="muted">These rules turn the answers into ratings. HR can change them when HRMC changes its policy, without a programmer. Each change is saved as a <b>new version</b> with a reason; <b>closed periods keep the version they were evaluated under</b>, so past results never change.</p>
+      <Card title={`Evaluation rules · ${version ? `version ${version}` : "UB's starting rules"}`}>
+        <p className="muted">These rules turn the answers into ratings. HR can change them when HRMC changes its policy. Each change is saved with a reason, and <b>closed periods keep the rules they used</b>, so past results never change.</p>
 
         <h4>1. When does a class count? (participation rule)</h4>
         <div className="row">
@@ -56,7 +56,7 @@ export default function Policy() {
           <tbody><tr><td>Answers needed</td>{examples.map((n) => <td key={n}><b>{neededResponses(n, f)}</b></td>)}</tr></tbody></table>
         <p className="muted small">Starting value: half of the class plus one (40 students → 21; 41 students → 21), as HRMC described it. Change it if the school decides otherwise. Fewer answers: that class is left out of the teacher's result.</p>
 
-        <h4>2. Rating bands (interpretation)</h4>
+        <h4>2. What each rating means</h4>
         <div className="row">
           {['Outstanding', 'Satisfactory', 'Fair'].map((w, i) => (
             <label key={w} className="inline">{w} from <input type="number" step="0.01" min="1" max="4" className="tiny" value={f.bands[i]} onChange={(e) => { const b = [...f.bands]; b[i] = Number(e.target.value); set('bands', b); }} /></label>

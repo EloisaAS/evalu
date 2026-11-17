@@ -17,6 +17,32 @@ export function ReleaseSteps({ stage }) {
 }
 
 /* ---------------- HR ---------------- */
+/** What HR does each term, in order, with a button to the right page. Steps already done get a check. */
+function TermSteps({ db, open, tasks, go }) {
+  const steps = [
+    ['Create the evaluation period', 'Choose the school year, term and deadline.', 'periods', 'Periods & release', open.length > 0],
+    ['Import the class lists', 'The file from the Registrar/ARC. Student accounts are made for you.', 'classes', 'Class lists', db.sections.length > 0],
+    ['Generate tasks', 'evalU lists who evaluates whom. Everyone then sees their evaluations when they sign in.', 'assign', 'Assignments', tasks.length > 0],
+    ['Watch the progress', 'See which classes still need answers, and send reminders.', 'monitor', 'Progress'],
+    ['Close the period after the deadline', 'Classes with too few answers are left out automatically.', 'periods', 'Periods & release'],
+    ['Send the results to the VPs, then release them to faculty', 'Faculty see their results only after the VPs approve.', 'periods', 'Periods & release'],
+    ['Print the UB reports', 'Comprehensive report, per-question sheets and comments.', 'reports', 'Reports'],
+  ];
+  return (
+    <Card title="Each term, step by step">
+      <ol className="term-steps">
+        {steps.map(([title, what, page, label, done], i) => (
+          <li key={title} className={done ? 'done' : ''}>
+            <span className="term-n">{done ? <Icon name="check" size={14} /> : i + 1}</span>
+            <span><b>{title}</b><span className="muted small"> · {what}</span></span>
+            <button className="ghost" onClick={() => go(page)}>{label}</button>
+          </li>
+        ))}
+      </ol>
+    </Card>
+  );
+}
+
 export function HROverview() {
   const { db } = useApp();
   const go = useNav();
@@ -39,6 +65,8 @@ export function HROverview() {
         <Stat icon="chart" label="Classes below half + 1" value={`${low.length} / ${classes.length}`} sub="Would be excluded if closed now" tone={low.length ? 'warn' : ''} />
         <Stat icon="users" label="Active accounts" value={active.length} sub={waiting ? `${waiting} not signed in yet` : 'All have signed in'} />
       </Stats>
+
+      <TermSteps db={db} open={open} tasks={tasks} go={go} />
 
       <div className="grid-2">
         <Card title="Open evaluation periods" actions={<button className="ghost" onClick={() => go('periods')}>Manage</button>}>

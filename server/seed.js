@@ -1,5 +1,6 @@
 // Fills the database with the simulated sample data (first run, or HR "Reset").
 import { buildSeed, DEMO_PASSWORD } from '../src/lib/seed.js';
+import { storeResults } from '../src/lib/logic.js';
 import { replaceAll, isEmpty, getDb, save } from './db.js';
 import { upgradeData } from './upgrade.js';
 import { hashPassword, encryptText } from './secrets.js';
@@ -11,6 +12,8 @@ export async function seedDatabase() {
   }
   // sample accounts share the demo password and don't have to change it
   for (const u of db.users) Object.assign(u, { passwordHash: await hashPassword(DEMO_PASSWORD), active: true, mustChangePassword: false });
+  // the sample's closed period keeps its stored results, like a period HR closed
+  for (const p of db.periods.filter((x) => x.status === 'closed')) storeResults(db, p);
   replaceAll(db);
   return db;
 }

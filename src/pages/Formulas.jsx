@@ -4,15 +4,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../lib/store';
 import {
-  TARGET_TYPES, GROUPS, METHODS, AGGREGATIONS, MISSING_RULES, ROUNDING_METHODS, formGroups, formulaKey, formulaSnapshot,
-  defaultFormula, currentPolicy, validateFormula, computeFinal, formulaWords, howInWords, computeTarget, targetsOf, targetType, deptName,
+  TARGET_TYPES, GROUPS, AGGREGATIONS, MISSING_RULES, ROUNDING_METHODS, formGroups, formulaKey, formulaSnapshot, methodOf, methodList,
+  defaultFormula, currentPolicy, policyFor, periodById, validateFormula, computeFinal, formulaWords, howInWords, computeTarget, targetsOf, targetType, deptName,
 } from '../lib/logic';
 import { Card, Select, Badge, ask, fmt } from '../ui';
 
-const STATUS = { draft: ['pending', 'Not sent yet'], pending: ['info', 'Waiting for VP'], approved: ['completed', 'Approved, ready to use'], active: ['completed', 'In use'], archived: ['muted', 'Old version'], rejected: ['overdue', 'Returned by VP'] };
+const STATUS = { draft: ['pending', 'Not sent yet'], pending: ['info', 'Waiting for VP'], approved: ['completed', 'Approved, ready to use'], scheduled: ['info', 'Starts next period'], active: ['completed', 'In use'], archived: ['muted', 'Old version'], rejected: ['overdue', 'Returned by VP'] };
+const day = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '');
 const SAMPLE = { ST: 3.5, DEAN: 3.6, CHAIR: 3.4 };
 const short = (txt) => txt.split(':')[0];
 const words = (f) => formulaWords(f, GROUPS);
+/** The computation in numbers, only when it is a simple sum (percentages or the same for all); otherwise nothing. */
+const plainHow = (r) => (r.final != null && r.breakdown?.some((b) => b.share && b.contribution != null) ? howInWords(r) : '');
 
 /** The settings, in plain words. Technical settings are under "More options". */
 function FormulaForm({ f, setF, groups, readOnly }) {
@@ -20,15 +23,24 @@ function FormulaForm({ f, setF, groups, readOnly }) {
   const setComp = (i, k, v) => set('components', f.components.map((c, j) => (j === i ? { ...c, [k]: v } : c)));
   const unused = groups.filter((g) => !f.components.some((c) => c.group === g));
   const total = f.components.reduce((a, c) => a + (Number(c.weight) || 0), 0);
-  const weighted = f.method === 'WEIGHTED_AVERAGE';
+  const m = methodOf(f.method);
+  const weighted = !!m?.usesWeights;
+  // a missing-group rule that does not work with the new method has to be chosen again
+  const setMethod = (k) => setF({ ...f, method: k, missing: methodOf(k).missingRules.includes(f.missing) ? f.missing : '' });
+  const choice = (x) => (
+    <label key={x.id} className="inline fx-choice"><input type="radio" name="fx-method" disabled={readOnly} checked={f.method === x.id} onChange={() => setMethod(x.id)} /> <span>{x.label}{x.help && <span className="muted small"> · {x.help}</span>}</span></label>
+  );
   return (
     <div className="fx-form">
       <h4>1. How are the groups combined?</h4>
       <div className="fx-choices">
-        {Object.entries(METHODS).map(([k, l]) => (
-          <label key={k} className="inline"><input type="radio" name="fx-method" disabled={readOnly} checked={f.method === k} onChange={() => set('method', k)} /> {l}</label>
-        ))}
+        {methodList().filter((x) => !x.advanced).map(choice)}
       </div>
+      <details className="fx-more" open={m?.advanced || undefined}>
+        <summary>Other ways (special cases)</summary>
+        <p className="muted small">Most schools use one of the two choices above. Example with Students 3.80, Dean 2.00 and Program Chair 3.60 (40/40/20): percentages give 3.04, "a low rating counts more" gives 2.91, "counts the most" gives 2.77.</p>
+        <div className="fx-choices">{methodList().filter((x) => x.advanced).map(choice)}</div>
+      </details>
 
       <h4>2. Which groups count{weighted ? ', and how much?' : '?'}</h4>
       <table className="fx-comps">
@@ -49,13 +61,13 @@ function FormulaForm({ f, setF, groups, readOnly }) {
           {unused.map((g) => <option key={g} value={g}>{GROUPS[g]}</option>)}
         </Select>
       )}
-      {f.method === 'CUSTOM' && (
+      {m?.usesExpression && (
         <label className="field">Your formula <span className="muted small">use these names: {f.components.map((c) => c.group).join(', ')} · e.g. 0.3*ST + 0.5*DEAN + 0.2*CHAIR</span>
           <input className="wide mono" disabled={readOnly} value={f.expression} placeholder="0.3*ST + 0.5*DEAN + 0.2*CHAIR" onChange={(e) => set('expression', e.target.value)} /></label>
       )}
 
       <h4>3. If a group has no rating (for example, the Dean did not evaluate)</h4>
-      <Select disabled={readOnly} value={f.missing} onChange={(v) => set('missing', v)}>{!f.missing && <option value="">Choose…</option>}{Object.entries(MISSING_RULES).filter(([k]) => f.method !== 'CUSTOM' || k !== 'REWEIGHT').map(([k, l]) => <option key={k} value={k}>{short(l)}</option>)}</Select>
+      <Select disabled={readOnly} value={f.missing} onChange={(v) => set('missing', v)}>{!f.missing && <option value="">Choose…</option>}{Object.entries(MISSING_RULES).filter(([k]) => !m || m.missingRules.includes(k)).map(([k, l]) => <option key={k} value={k}>{short(l)}</option>)}</Select>
 
       <details className="source">
         <summary>More options</summary>
@@ -104,9 +116,9 @@ function TryItReady({ db, tt, dept, draft, baseline }) {
         <label key={g} className="inline">{GROUPS[g]} <input type="number" step="0.01" min="1" max="4" className="tiny" value={scores[g] ?? ''} placeholder="none" onChange={(e) => setScores({ ...scores, [g]: e.target.value })} /></label>
       ))}</div>
       <div className="fx-compare">
-        <div><span className="muted">Now</span><b>{fmt(now.final)}</b>{tag(now)}<span className="muted small">{howInWords(now)}</span></div>
+        <div><span className="muted">Now</span><b>{fmt(now.final)}</b>{tag(now)}<span className="muted small">{plainHow(now)}</span></div>
         <div className="fx-arrow">→</div>
-        <div><span className="muted">With this formula</span><b>{fmt(next.final)}</b>{tag(next)}<span className="muted small">{howInWords(next)}</span></div>
+        <div><span className="muted">With this formula</span><b>{fmt(next.final)}</b>{tag(next)}<span className="muted small">{plainHow(next)}</span></div>
       </div>
       {closed.length > 0 && (
         <p>
@@ -137,7 +149,7 @@ export default function Formulas() {
   const key = formulaKey(tt, dept || null);
   const versions = (db.formulas || []).filter((f) => f.key === key).sort((a, b) => b.version - a.version);
   const active = versions.find((f) => f.status === 'active');
-  const working = versions.find((f) => ['draft', 'pending', 'approved', 'rejected'].includes(f.status));
+  const working = versions.find((f) => ['draft', 'pending', 'approved', 'scheduled', 'rejected'].includes(f.status));
   const baseline = active ? formulaSnapshot(active) : defaultFormula(db.rules[tt] || {}, currentPolicy(db));
   const [f, setF] = useState(null);
   const [msg, setMsg] = useState('');
@@ -164,9 +176,13 @@ export default function Formulas() {
     if (basis && await act('submitFormula', { id: working.id, basis })) setMsg('Sent. The VPs were notified.');
   };
   const use = async () => {
-    if (!(await ask('Start using this formula?', 'New evaluation periods will use it. Periods that already have answers keep their old formula, so no result changes.', { ok: 'Start using it' }))) return;
-    const r = await act('activateFormula', { id: working.id });
+    if (!(await ask('Start using this formula now?', 'Open periods with no answers yet for this group, and every new period, will use it. Periods that already have answers keep their old formula, so no result changes.', { ok: 'Start now' }))) return;
+    const r = await act('activateFormula', { id: working.id, when: 'now' });
     if (r) setMsg(`Now in use.${r.kept ? ` ${r.kept} open period(s) already had answers and keep the old formula.` : ''}`);
+  };
+  const later = async () => {
+    if (!(await ask('Start with the next evaluation period?', 'The formula in use stays until you create the next evaluation period under Periods & release. That new period will use this one.', { ok: 'Start next period' }))) return;
+    if (await act('activateFormula', { id: working.id, when: 'next' })) setMsg('Set. It starts when you create the next evaluation period.');
   };
 
   return (
@@ -184,12 +200,12 @@ export default function Formulas() {
           {db.departments.filter((d) => isHR || deptKeys.includes(d.id)).map((d) => <option key={d.id} value={d.id}>Only {d.name}</option>)}
         </Select>
       </span>}>
-        <p className="muted">Steps: change it here → try it → send it to the VP → after approval, start using it. Old results never change.</p>
+        <p className="muted">{isHR ? 'Steps: change it here → try it → send it to the VP → after approval, start using it. Old results never change.' : 'HR changes the formula and sends it to you. Check it with "Try it", then approve it or return it to HR. Old results never change.'}</p>
         <div className="fx-now">
           <span className="muted">{who} now:</span>
           <b className="fx-sentence">{words(baseline)}</b>
           <span className="muted small">If a group has no rating: {short(MISSING_RULES[baseline.missing]).toLowerCase()}. Rounded to {baseline.rounding.decimals} decimals.{active?.meta.basis ? ` Basis: ${active.meta.basis}.` : ''}</span>
-          {!active && <span className="note warn small">This is only the <b>starting formula</b> (from the manuscript, Table 6). It is not built into the program and has not been confirmed by HRMC: change it, or start a blank one, to match what the school decides.</span>}
+          {!active && <span className="note warn small">This is the <b>starting formula</b> that came with evalU. If the school uses a different one, {isHR ? 'click "Change this formula"' : 'HR can change it'}.</span>}
         </div>
         {isHR && !working && <div className="row"><button onClick={() => start(active)}>Change this formula</button><button className="ghost" onClick={() => start(null, true)}>Start a blank formula</button><span className="muted small">Blank: you choose every part yourself.</span></div>}
       </Card>
@@ -198,6 +214,7 @@ export default function Formulas() {
         <Card title={`New formula for ${who}`} actions={<Badge kind={STATUS[working.status][0]}>{STATUS[working.status][1]}</Badge>}>
           {working.status === 'rejected' && <div className="note warn">The VP returned it: "{working.meta.rejectReason}". Fix it and send it again.</div>}
           {working.status === 'pending' && <div className="note">Basis: <b>{working.meta.basis}</b>. {isHR ? 'Waiting for the VP.' : 'Check it with "Try it", then approve or return it.'}</div>}
+          {working.status === 'scheduled' && <div className="note">Approved by {working.meta.approvedBy}. It starts when HR creates the next evaluation period. Until then, {who} keep the formula in use now.</div>}
           <div className="fx-now"><b className="fx-sentence">{words(f)}</b></div>
           <FormulaForm f={f} setF={setF} groups={groups} readOnly={!editable} />
           {errs.length > 0 && editable && <div className="note warn"><b>Before sending, fix:</b><ul>{errs.map((e) => <li key={e}>{e}</li>)}</ul></div>}
@@ -206,7 +223,8 @@ export default function Formulas() {
             {editable && <><button disabled={errs.length > 0} onClick={send}>Send to VP for approval</button>
               <button className="ghost" disabled={!dirty} onClick={save}>Save</button>
               <button className="ghost" onClick={async () => { if (await ask('Discard this new formula?', 'The formula in use stays the same.', { ok: 'Discard', danger: true })) act('deleteFormulaDraft', { id: working.id }); }}>Discard</button></>}
-            {isHR && working.status === 'approved' && <button onClick={use}>Start using this formula</button>}
+            {isHR && working.status === 'approved' && <><button onClick={use}>Start using it now</button><button className="ghost" onClick={later}>Start with the next period</button><span className="muted small">Not sure? Choose "Start with the next period": the period going on now is not affected.</span></>}
+            {isHR && working.status === 'scheduled' && <button className="ghost" onClick={use}>Start using it now instead</button>}
             {user.role === 'DIR' && working.status === 'pending' && <>
               <button onClick={async () => { if (await ask('Approve this formula?', 'HR can then start using it. Old results do not change.', { ok: 'Approve' })) act('approveFormula', { id: working.id }); }}>Approve</button>
               <button className="ghost" onClick={async () => { const why = await ask('Return this formula to HR?', 'Write what needs to change.', { ok: 'Return to HR', danger: true, input: 'e.g. The percentages do not match the committee decision' }); if (why) act('rejectFormula', { id: working.id, reason: why }); }}>Return to HR</button>
@@ -219,18 +237,56 @@ export default function Formulas() {
       <Card title="Past formulas">
         {versions.length === 0 ? <p className="muted">No saved formula yet. {who} uses the starting formula shown above.</p> : (
           <table>
-            <thead><tr><th>Formula</th><th>Status</th><th>Approved by</th><th>Used in</th></tr></thead>
+            <thead><tr><th>Formula</th><th>Status</th><th>Approved</th><th>Used in</th></tr></thead>
             <tbody>{versions.map((v) => (
               <tr key={v.id}>
-                <td>{words(v.config)}<div className="muted small">Version {v.version}{v.meta.basis ? ` · ${v.meta.basis}` : ''}</div></td>
+                <td>{words(v.config)}<div className="muted small">Version {v.version} · {methodOf(v.config.method)?.label || v.config.method}{v.meta.basis ? ` · ${v.meta.basis}` : ''}</div></td>
                 <td><Badge kind={STATUS[v.status][0]}>{STATUS[v.status][1]}</Badge></td>
-                <td className="small">{v.meta.approvedBy || '—'}</td>
+                <td className="small">{v.meta.approvedBy ? <>{v.meta.approvedBy}<div className="muted">{day(v.meta.approvedAt)}</div></> : '—'}</td>
                 <td className="small">{db.periods.filter((p) => Object.values(p.formulas || {}).some((x) => x.id === v.id)).map((p) => p.name).join(', ') || '—'}</td>
               </tr>
             ))}</tbody>
           </table>
         )}
       </Card>
+      {isHR && <OldResultsCheck db={db} />}
     </>
+  );
+}
+
+/**
+ * Old results stay the same: every result stored when a period was closed is computed again from its
+ * stored ratings with the formula version it was stored with, and compared with the stored rating.
+ */
+function OldResultsCheck({ db }) {
+  const [rows, setRows] = useState(null);
+  const check = () => setRows((db.results || []).map((r) => {
+    const d = r.data || {}, p = periodById(db, r.periodId);
+    const key = d.formula?.key || '';
+    // results stored before the whole formula was kept with them: the version fixed in the period
+    const f = d.formula?.components ? d.formula : (p?.formulas || {})[key] || defaultFormula((p?.rules || db.rules)[key.split('|')[0]] || {}, policyFor(db, r.periodId));
+    const again = computeFinal(f, Object.fromEntries(Object.entries(d.groups || {}).map(([g, x]) => [g, x.score ?? null]))).final;
+    return { r, p, f, same: again === d.final, again };
+  }));
+  const periods = rows ? [...new Set(rows.map((x) => x.r.periodId))] : [];
+  const bad = rows ? rows.filter((x) => !x.same) : [];
+  const label = (x) => `${x.f.name || 'Starting formula'}${x.f.version ? ` v${x.f.version}` : ''} (${(methodOf(x.f.method)?.label || x.f.method || '').toLowerCase()})`;
+  return (
+    <Card title="Check old ratings" actions={<button className="ghost" onClick={check}>{rows ? 'Check again' : 'Check now'}</button>}>
+      <p className="muted">Click "Check now" to make sure that changing the formula did not change any old rating.</p>
+      {rows && (rows.length === 0 ? <p className="muted">No period has been closed yet, so there is nothing to check.</p> : <>
+        <div className={`note ${bad.length ? 'warn' : 'ok'}`}>{bad.length ? `${bad.length} of ${rows.length} old ratings changed. See the list below.` : `All ${rows.length} old ratings are unchanged.`}</div>
+        <table>
+          <thead><tr><th>Period</th><th>Formula used</th><th>Ratings</th><th>Unchanged</th></tr></thead>
+          <tbody>{periods.map((pid) => {
+            const xs = rows.filter((x) => x.r.periodId === pid);
+            const ok = xs.filter((x) => x.same).length;
+            const used = [...new Set(xs.filter((x) => x.r.data.final != null).map(label))];
+            return <tr key={pid}><td>{xs[0].p?.name || pid}</td><td className="small">{used.join('; ') || '—'}</td><td>{xs.length}</td><td>{ok === xs.length ? <Badge kind="completed">all {xs.length}</Badge> : <Badge kind="overdue">{ok} of {xs.length}</Badge>}</td></tr>;
+          })}</tbody>
+        </table>
+        {bad.length > 0 && <ul>{bad.slice(0, 20).map((x) => <li key={x.r.periodId + x.r.targetId}>{db.users.find((u) => u.id === x.r.targetId)?.name}: saved {String(x.r.data.final)}, computed again {String(x.again)}</li>)}</ul>}
+      </>)}
+    </Card>
   );
 }

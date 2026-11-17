@@ -9,7 +9,7 @@ import { Card, Badge, RuleNote, PeriodPicker, Select, Meter, Stat, Stats, Empty,
 import { ReleaseSteps } from './Overview';
 import { UbPrints, CommentText, SummarySheet as Sheet, ratingWord as rw, twoDp, UbPacket } from './CompReport';
 
-export const STATUS_TEXT = { complete: 'Complete', reweighted: 'Complete (re-weighted)', incomplete: 'No valid result yet', 'weights-missing': 'Weights not set' };
+export const STATUS_TEXT = { complete: 'Complete', reweighted: 'Complete (a group had no rating)', incomplete: 'No valid result yet', 'weights-missing': 'Weights not set' };
 
 export function visiblePeriods(db, user) {
   return db.periods.filter((p) => canSeeAll(user, p));
@@ -92,15 +92,20 @@ function missingSentence(res) {
 
 export function Computation({ res }) {
   const f = res.formula || {};
+  // results stored before the whole formula was kept: rebuild the sentence from the breakdown
+  const shownF = f.components ? f : { method: f.method, components: res.breakdown?.map((b) => ({ group: b.group, weight: b.weight })) || [], expression: '' };
+  const points = res.breakdown?.some((b) => b.share && b.contribution != null); // only sums have "points" per group
   return (
     <details className="source computation">
       <summary>How this rating was computed</summary>
-      <p><b>{formulaWords({ method: f.method, components: res.breakdown?.map((b) => ({ group: b.group, weight: b.weight })) || [], expression: '' }, GROUPS)}</b></p>
+      <p><b>{formulaWords(shownF, GROUPS)}</b></p>
       {res.breakdown?.length > 0 && f.method !== 'CUSTOM' && (
         <table>
-          <thead><tr><th>Group</th><th>Rating</th><th>Counts for</th><th>Points</th></tr></thead>
-          <tbody>{res.breakdown.map((b) => <tr key={b.group}><td>{GROUPS[b.group]}</td><td>{b.score == null ? <span className="muted">no rating</span> : b.score.toFixed(2)}</td><td>{b.share ? `${+(b.share * 100).toFixed(1)}%` : '—'}</td><td>{b.share ? b.contribution.toFixed(2) : '—'}</td></tr>)}
-            <tr className="cat-total"><td>Final rating</td><td /><td /><td><b>{res.final == null ? '—' : res.final.toFixed(2)}</b></td></tr></tbody>
+          <thead><tr><th>Group</th><th>Rating</th><th>Counts for</th>{points && <th>Points</th>}</tr></thead>
+          <tbody>{res.breakdown.map((b) => <tr key={b.group}><td>{GROUPS[b.group]}</td><td>{b.score == null ? <span className="muted">no rating</span> : b.score.toFixed(2)}</td><td>{b.share ? `${+(b.share * 100).toFixed(1)}%` : '—'}</td>{points && <td>{b.share && b.contribution != null ? b.contribution.toFixed(2) : '—'}</td>}</tr>)}
+            {points
+              ? <tr className="cat-total"><td>Final rating</td><td /><td /><td><b>{res.final == null ? '—' : res.final.toFixed(2)}</b></td></tr>
+              : <tr className="cat-total"><td>Final rating</td><td><b>{res.final == null ? '—' : res.final.toFixed(2)}</b></td><td /></tr>}</tbody>
         </table>
       )}
       <p className="small muted">{howInWords(res)}{res.missing?.length > 0 && res.final != null ? ` · ${missingSentence(res)}` : ''} · {f.name}{f.version ? `, version ${f.version}` : ''}</p>
@@ -157,7 +162,7 @@ export function ResultCard({ res, db, periodId, own = false }) {
         {res.sections.filter((s) => s.valid).map((s) => {
           const ts = tasks.filter((t) => t.sectionId === s.section.id);
           return (
-            <details key={s.section.id}><summary>Per-item results · {s.section.code} {s.section.subject} <span className="muted">({s.responded} students)</span></summary>
+            <details key={s.section.id}><summary>Results per question · {s.section.code} {s.section.subject} <span className="muted">({s.responded} students)</span></summary>
               <ItemTable rows={itemStats(ts, policyFor(db, periodId).lowItem)} criteria={db.criteria} categoryOf={categoryLookup(db, ts)} />
             </details>
           );
@@ -166,7 +171,7 @@ export function ResultCard({ res, db, periodId, own = false }) {
           const ts = groupTasks(g);
           if (!ts.some((t) => t.response)) return null;
           return (
-            <details key={g}><summary>Per-item results · {GROUPS[g]} <span className="muted">({ts.filter((t) => t.response).length} evaluation{ts.filter((t) => t.response).length > 1 ? 's' : ''})</span></summary>
+            <details key={g}><summary>Results per question · {GROUPS[g]} <span className="muted">({ts.filter((t) => t.response).length} evaluation{ts.filter((t) => t.response).length > 1 ? 's' : ''})</span></summary>
               <ItemTable rows={itemStats(ts, policyFor(db, periodId).lowItem)} criteria={db.criteria} categoryOf={categoryLookup(db, ts)} />
             </details>
           );
@@ -342,7 +347,7 @@ function FormalPrint({ tab, db, pid, period, all, secRows, bySubject, dept, sele
   const ratingWord = (x, ntp = false) => rw(x, ntp, pol);
   const SummarySheet = (props) => <Sheet policy={pol} {...props} />;
   const ntpOf = (r) => String(r.type).startsWith('NTP');
-  const remark = (r) => (r.status === 'complete' ? 'Complete' : r.status === 'reweighted' ? `Computed over ${r.basis}%` : STATUS_TEXT[r.status]);
+  const remark = (r) => (r.status === 'complete' ? 'Complete' : r.status === 'reweighted' ? `Without ${(r.missing || []).map((g) => GROUPS[g]).join(', ') || 'one group'}` : STATUS_TEXT[r.status]);
   let sheet = null;
   if (tab === 'overall') {
     sheet = <SummarySheet title="Evaluation Summary of Personnel" period={period}
@@ -385,7 +390,7 @@ function FormalPrint({ tab, db, pid, period, all, secRows, bySubject, dept, sele
         if (catOf && c !== last) { rows.push({ cat: `${ROMAN_N[ci] || ci + 1}. ${c}` }); ci++; last = c; n = 0; }
         rows.push([`${++n}. ${db.criteria.find((q) => q.id === x.criterionId)?.text || x.criterionId}`, twoDp(x.mean), x.n]);
       }
-      return { heading: `By the ${GROUPS[g]} · rating the ${kinds} · ${ts.length} respondent${ts.length === 1 ? '' : 's'}`, columns: ['Item', 'Mean', 'Answers'], rows, num: false };
+      return { heading: `By the ${GROUPS[g]} · rating the ${kinds} · ${ts.length} respondent${ts.length === 1 ? '' : 's'}`, columns: ['Question', 'Average', 'Answers'], rows, num: false };
     });
     sheet = <SummarySheet title="Department Evaluation Summary" period={period}
       info={[['Department', deptName(db, dept)], ['Personnel evaluated', results.length], ['Total respondents', counted.filter((t) => t.response).length], ['Average final rating', `${twoDp(avg)} ${avg == null ? '' : `(${ratingWord(avg)})`}`]]}
@@ -444,7 +449,7 @@ export default function Reports() {
     <ApprovalPanel period={period} />
     <Stats>
       <Stat icon="star" label="Average final score" value={fmt(avg)} sub="personnel with a final score" tone="good" />
-      <Stat icon="users" label="With a final score" value={`${withFinal.length} / ${all.length}`} sub={`${all.filter((r) => r.status === 'reweighted').length} re-weighted (a group missing)`} />
+      <Stat icon="users" label="With a final score" value={`${withFinal.length} / ${all.length}`} sub={`${all.filter((r) => r.status === 'reweighted').length} computed without one group (no rating)`} />
       <Stat icon="chart" label="Classes excluded" value={`${invalid} / ${secRows.length}`} sub="below half of the class + 1" tone={invalid ? 'warn' : ''} />
     </Stats>
     <Card actions={tab !== 'ubprint' && <PrintButton label={tab === 'individual' ? 'Print UB report' : 'Print'} />}>

@@ -131,7 +131,7 @@ export function ItemTable({ rows, criteria, categoryOf }) {
   const avg = (rs) => rs.reduce((t, r) => t + r.mean, 0) / rs.length;
   return (
     <table className="items">
-      <thead><tr><th>Item</th><th>Mean</th><th>Answers</th><th className="dist-h">Ratings 1 · 2 · 3 · 4</th></tr></thead>
+      <thead><tr><th>Question</th><th>Average</th><th>Answers</th><th className="dist-h">Ratings 1 · 2 · 3 · 4</th></tr></thead>
       <tbody>
         {cats.flatMap((c, ci) => [
           ...(categoryOf ? [<tr key={'c' + ci} className="cat-row"><td>{roman[ci] || ci + 1}. {c.name}</td><td><b>{fmt(avg(c.rows))}</b></td><td colSpan={2} className="muted">category average</td></tr>] : []),

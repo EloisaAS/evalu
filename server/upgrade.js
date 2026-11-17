@@ -1,6 +1,6 @@
 // Brings a database made by an earlier version of evalU up to date, without losing data.
 // Runs once at start-up (see seed.js). Safe to run many times: it only fills in what is missing.
-import { formForTask, uid, UB_DEPARTMENTS, DEFAULT_POLICY } from '../src/lib/logic.js';
+import { formForTask, uid, UB_DEPARTMENTS, DEFAULT_POLICY, storeResults } from '../src/lib/logic.js';
 import { installUbForms, UB_FORM_MARK } from '../src/lib/ubInstall.js';
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -98,5 +98,9 @@ export function upgradeData(db) {
       if (ins) { t.response.instrumentId = ins.id; changed = true; }
     }
   }
+
+  // a period closed before results were stored keeps its result too (computed with its own fixed formula)
+  db.results ||= [];
+  for (const p of db.periods.filter((x) => x.status === 'closed' && !db.results.some((r) => r.periodId === x.id))) { storeResults(db, p); changed = true; }
   return changed;
 }
