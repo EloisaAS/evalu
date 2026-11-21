@@ -4,8 +4,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../lib/store';
 import {
-  TARGET_TYPES, AGGREGATIONS, MISSING_RULES, ROUNDING_METHODS, formGroups, formulaKey, formulaSnapshot, methodOf, methodList,
-  defaultFormula, currentPolicy, policyFor, periodById, validateFormula, computeFinal, formulaWords, howInWords, computeTarget, targetsOf, targetType, deptName, groupName,
+  AGGREGATIONS, MISSING_RULES, ROUNDING_METHODS, formGroups, formulaKey, formulaSnapshot, methodOf, methodList,
+  defaultFormula, currentPolicy, policyFor, periodById, validateFormula, computeFinal, formulaWords, howInWords, computeTarget, targetsOf, targetTypesOf, evaluateeRoles, evaluateeRoleName, deptName, groupName,
 } from '../lib/logic';
 import { Card, Select, Badge, ask, fmt } from '../ui';
 
@@ -116,8 +116,8 @@ function TryItReady({ db, tt, dept, draft, baseline }) {
   const closed = db.periods.filter((p) => p.status === 'closed');
   const [pid, setPid] = useState(closed.at(-1)?.id || '');
   const [showList, setShowList] = useState(false);
-  const people = targetsOf(db).filter((u) => targetType(db, u) === tt && (!dept || u.dept === dept));
-  const real = useMemo(() => (pid ? people.map((u) => ({ u, now: computeTarget(db, pid, u.id).final, next: computeTarget(db, pid, u.id, { formula: draft }).final }))
+  const people = targetsOf(db).filter((u) => targetTypesOf(db, u).includes(tt) && (!dept || u.dept === dept));
+  const real = useMemo(() => (pid ? people.map((u) => ({ u, now: computeTarget(db, pid, u.id, { targetType: tt }).final, next: computeTarget(db, pid, u.id, { formula: draft, targetType: tt }).final }))
     .filter((r) => r.now != null || r.next != null) : []), [db, pid, draft]); // eslint-disable-line react-hooks/exhaustive-deps
   const changed = real.filter((r) => r.now !== r.next);
   const tag = (r) => (r.final == null ? <Badge kind="overdue">no rating</Badge> : null);
@@ -136,7 +136,7 @@ function TryItReady({ db, tt, dept, draft, baseline }) {
       {closed.length > 0 && (
         <p>
           On <Select value={pid} onChange={setPid}>{closed.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</Select>:{' '}
-          <b>{changed.length} of {real.length}</b> {TARGET_TYPES[tt].toLowerCase()} would get a different rating.{' '}
+          <b>{changed.length} of {real.length}</b> {evaluateeRoleName(db, tt).toLowerCase()} would get a different rating.{' '}
           {changed.length > 0 && <button className="link" onClick={() => setShowList(!showList)}>{showList ? 'Hide' : 'See who'}</button>}
           <span className="muted small"> (Nothing is changed: this is only a test.)</span>
         </p>
@@ -156,7 +156,7 @@ export default function Formulas() {
   const names = Object.fromEntries((db.evaluatorGroups || []).map((g) => [g.id, g.name]));
   const words = (formula) => formulaWords(formula, names);
   const isHR = user.role === 'HR';
-  const types = Object.keys(TARGET_TYPES).filter((x) => formGroups(db, x).length);
+  const types = evaluateeRoles(db).filter((r) => r.active !== false && formGroups(db, r.id).length).map((r) => r.id);
   const pendingAll = (db.formulas || []).filter((f) => f.status === 'pending');
   const [tt, setTt] = useState(() => (!isHR && pendingAll[0]?.targetType) || types[0]);
   const deptKeys = [...new Set((db.formulas || []).filter((f) => f.targetType === tt && f.dept).map((f) => f.dept))];
@@ -173,14 +173,14 @@ export default function Formulas() {
   const errs = f ? validateFormula(f, { allowedGroups: groups, groupNames: names }) : [];
   const editable = isHR && working && ['draft', 'rejected'].includes(working.status);
   const dirty = working && f && JSON.stringify(f) !== JSON.stringify(working.config);
-  const who = `${TARGET_TYPES[tt]}${dept ? ` (${deptName(db, dept)} only)` : ''}`;
+  const who = `${evaluateeRoleName(db, tt)}${dept ? ` (${deptName(db, dept)} only)` : ''}`;
 
   // start from the formula in use (a copy), or from nothing (HR decides every part)
   const start = async (from, blank = false) => {
     const config = blank
       ? { method: '', methodVersion: 1, components: [], expression: '', missing: '', minGroups: 1, participation: { percent: currentPolicy(db).participationPercent, plusOne: currentPolicy(db).participationPlusOne }, effectiveFrom: '', effectiveUntil: '', rounding: { decimals: 2, method: 'HALF_UP' } }
       : structuredClone(from?.config ?? baseline);
-    config.name = `${TARGET_TYPES[tt]}${dept ? ` – ${deptName(db, dept)}` : ''}`;
+    config.name = `${evaluateeRoleName(db, tt)}${dept ? ` – ${deptName(db, dept)}` : ''}`;
     config.effectiveFrom ||= ''; config.effectiveUntil ||= '';
     delete config.id; delete config.version; delete config.key; delete config.dept;
     if (await act('saveFormulaDraft', { targetType: tt, dept: dept || null, config })) setMsg('Make your changes below, try them, then send them to the VP.');
@@ -211,7 +211,7 @@ export default function Formulas() {
         </Card>
       )}
       <Card title="Scoring percentages and final calculation" actions={<span className="row" style={{ margin: 0 }}>
-        <Select value={tt} onChange={(v) => { setTt(v); setDept(''); setMsg(''); }} aria-label="Who is evaluated">{types.map((x) => <option key={x} value={x}>{TARGET_TYPES[x]}</option>)}</Select>
+        <Select value={tt} onChange={(v) => { setTt(v); setDept(''); setMsg(''); }} aria-label="Who is evaluated">{types.map((x) => <option key={x} value={x}>{evaluateeRoleName(db, x)}</option>)}</Select>
         <Select value={dept} onChange={(v) => { setDept(v); setMsg(''); }} aria-label="Department">
           <option value="">All departments</option>
           {db.departments.filter((d) => isHR || deptKeys.includes(d.id)).map((d) => <option key={d.id} value={d.id}>Only {d.name}</option>)}

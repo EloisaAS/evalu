@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, BarChart, Bar, Legend } from 'recharts';
 import { useApp } from '../lib/store';
 import {
-  computeAll, canSeeAll, hasFinal, itemStats, sectionStats, targetsOf, policyFor, TARGET_TYPES, deptName, groupName,
+  computeAll, canSeeAll, hasFinal, itemStats, sectionStatsByRole, targetsOf, policyFor, evaluateeRoleName, deptName, groupName, targetType, userById,
   formOfTask, itemCategory, interpretation, commentParts,
 } from '../lib/logic';
 import { Card, PeriodPicker, Select, Badge, fmt, pct } from '../ui';
@@ -28,8 +28,9 @@ function Source({ children }) {
 /** The evaluations that count for a period (students only from classes that reached half + 1). */
 function countedTasks(db, periodId, dept) {
   const people = new Set(targetsOf(db).filter((u) => dept === 'ALL' || u.dept === dept).map((u) => u.id));
-  const valid = new Set(db.sections.map((s) => sectionStats(db, periodId, s.id)).filter((s) => s.valid).map((s) => s.section.id));
-  return db.tasks.filter((t) => t.periodId === periodId && t.response && !t.response.redacted && people.has(t.targetId) && (t.group !== 'ST' || valid.has(t.sectionId)));
+  const valid = new Set(db.sections.flatMap((s) => sectionStatsByRole(db, periodId, s.id).filter((st) => st.valid).map((st) => `${s.id}|${st.targetRole}`)));
+  return db.tasks.filter((t) => t.periodId === periodId && t.response && !t.response.redacted && people.has(t.targetId)
+    && (t.group !== 'ST' || valid.has(`${t.sectionId}|${t.targetType || targetType(db, userById(db, t.targetId))}`)));
 }
 
 /** Per-item means for one period, keyed by evaluator group + criterion. */
@@ -116,7 +117,7 @@ function PeriodCompare({ db, periods, data, dept }) {
           <table>
             <thead><tr><th>Name</th><th>Type</th><th>Department</th><th>{A.name}</th><th>{B.name}</th><th>Change</th></tr></thead>
             <tbody>{rows.map(({ r, a, b, d }) => (
-              <tr key={r.targetId}><td>{r.target.name}</td><td>{TARGET_TYPES[r.type]}</td><td>{deptName(db, r.target.dept)}</td><td>{fmt(a)}</td><td>{fmt(b)}</td>
+              <tr key={`${r.targetId}|${r.type}`}><td>{r.target.name}</td><td>{evaluateeRoleName(db, r.type)}</td><td>{deptName(db, r.target.dept)}</td><td>{fmt(a)}</td><td>{fmt(b)}</td>
                 <td>{d > 0 ? <Badge kind="completed">▲ {d.toFixed(2)}</Badge> : d < 0 ? <Badge kind="overdue">▼ {Math.abs(d).toFixed(2)}</Badge> : <span className="muted">no change</span>}</td></tr>
             ))}</tbody>
           </table>
@@ -172,7 +173,7 @@ export default function Analytics() {
 
   // participation per department
   const participation = depts.map((d) => {
-    const st = db.sections.filter((s) => s.dept === d.id).map((s) => sectionStats(db, pid, s.id)).filter((s) => s.required);
+    const st = db.sections.filter((s) => s.dept === d.id).flatMap((s) => sectionStatsByRole(db, pid, s.id)).filter((s) => s.required);
     const enrolled = st.reduce((a, s) => a + s.required, 0), answered = st.reduce((a, s) => a + s.responded, 0);
     return { department: short(d.name), classes: st.length, counted: st.filter((s) => s.valid).length, excluded: st.filter((s) => !s.valid).length, enrolled, answered, rate: enrolled ? answered / enrolled : null };
   }).filter((r) => r.classes);
@@ -326,7 +327,7 @@ export default function Analytics() {
         {gaps.length === 0 ? <p className="muted">No one was rated by two or more groups.</p> : (
           <table><thead><tr><th>Name</th><th>Ratings by group</th><th>Gap</th></tr></thead>
             <tbody>{gaps.slice(0, 15).map(({ r, gs, gap }) => (
-              <tr key={r.targetId}><td>{r.target.name} <span className="muted small">· {TARGET_TYPES[r.type]}</span></td>
+              <tr key={`${r.targetId}|${r.type}`}><td>{r.target.name} <span className="muted small">· {evaluateeRoleName(db, r.type)}</span></td>
                 <td>{gs.map((g) => `${groupName(db, g.k)} ${fmt(g.s)}`).join(' · ')}</td>
                 <td>{gap >= 0.5 ? <Badge kind="overdue">{gap.toFixed(2)}</Badge> : gap.toFixed(2)}</td></tr>
             ))}</tbody></table>

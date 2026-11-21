@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '../lib/store';
-import { ROLES, POSITIONS, TARGET_TYPES, needsDept, deptName, missingUbDepartments, isNursingDept, nursingDepts, evaluatorGroups, defaultEvaluatorGroups, groupName } from '../lib/logic';
+import { ROLES, POSITIONS, needsDept, deptName, missingUbDepartments, isNursingDept, nursingDepts, evaluatorGroups, defaultEvaluatorGroups, groupName, evaluateeRoles, evaluateeRoleName, accessRoleName, targetType, targetTypesOf } from '../lib/logic';
 import { Card, Select, Badge, Avatar, Empty, SaveInput, newestFirst, usePages, ask } from '../ui';
 
 /* ---------------- change your own password ---------------- */
@@ -65,7 +65,7 @@ export function MyAccount() {
             <tr><th>Name</th><td>{user.name}</td></tr>
             <tr><th>Username</th><td>{user.username}</td></tr>
             <tr><th>UB email</th><td>{user.email || '—'}</td></tr>
-            <tr><th>Role</th><td>{ROLES[user.role]}{Object.keys(POSITIONS[user.role] || {}).length > 1 && ` — ${POSITIONS[user.role][user.position] || user.position}`}</td></tr>
+            <tr><th>Role</th><td>{accessRoleName(db, user.accessRoleId || user.role)}{Object.keys(POSITIONS[user.role] || {}).length > 1 && ` — ${POSITIONS[user.role][user.position] || user.position}`}</td></tr>
             {user.dept && <tr><th>Department</th><td>{deptName(db, user.dept)}</td></tr>}
           </tbody>
         </table>
@@ -80,15 +80,21 @@ export function MyAccount() {
 }
 
 /* ---------------- HR: accounts ---------------- */
-const EMPTY = { name: '', username: '', email: '', role: 'ST', position: 'student', dept: '', sectionIds: [], evaluatorGroupIds: [] };
+const EMPTY = { name: '', username: '', email: '', role: 'ST', accessRoleId: 'ST', position: 'student', dept: '', sectionIds: [], evaluatorGroupIds: [], evaluateeTypeIds: [] };
 
 function AccountForm({ initial, onSave, onCancel, saveLabel }) {
   const { db } = useApp();
   const [f, setF] = useState(initial);
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
-  const setRole = (role) => {
+  const setRole = (accessRoleId) => {
+    const profile = db.accessRoles.find((r) => r.id === accessRoleId);
+    if (!profile) return;
+    const role = profile.template;
     const position = Object.keys(POSITIONS[role])[0];
-    setF((x) => ({ ...x, role, position, dept: needsDept(role) ? x.dept : '', sectionIds: role === 'ST' ? x.sectionIds : [], evaluatorGroupIds: defaultEvaluatorGroups(role, position) }));
+    setF((x) => {
+      const dept = needsDept(role) ? x.dept : '';
+      return { ...x, role, accessRoleId, position, dept, sectionIds: role === 'ST' ? x.sectionIds : [], evaluatorGroupIds: defaultEvaluatorGroups(role, position), evaluateeTypeIds: role === 'ST' ? [] : [targetType(db, { role, position, dept })].filter(Boolean) };
+    });
   };
   const classes = db.sections.filter((s) => s.dept === f.dept);
   // Clinical Instructors are only in the School of Nursing
@@ -100,11 +106,22 @@ function AccountForm({ initial, onSave, onCancel, saveLabel }) {
     const currentDefaults = defaultEvaluatorGroups(x.role, x.position);
     const additional = (x.evaluatorGroupIds || []).filter((id) => !currentDefaults.includes(id));
     const evaluatorGroupIds = [...new Set([...defaultEvaluatorGroups(x.role, v), ...additional])];
-    return { ...x, position: v, dept: keep ? x.dept : (nursingDepts(db)[0]?.id || ''), sectionIds: keep ? x.sectionIds : [], evaluatorGroupIds };
+    const dept = keep ? x.dept : (nursingDepts(db)[0]?.id || '');
+    const oldType = targetType(db, { role: x.role, position: x.position, dept: x.dept });
+    const newType = targetType(db, { role: x.role, position: v, dept });
+    const evaluateeTypeIds = [...new Set([...(x.evaluateeTypeIds || []).filter((id) => id !== oldType), newType].filter(Boolean))];
+    return { ...x, position: v, dept, sectionIds: keep ? x.sectionIds : [], evaluatorGroupIds, evaluateeTypeIds };
+  });
+  const setDepartment = (dept) => setF((x) => {
+    const oldType = targetType(db, { role: x.role, position: x.position, dept: x.dept });
+    const newType = targetType(db, { role: x.role, position: x.position, dept });
+    return { ...x, dept, sectionIds: [], evaluateeTypeIds: [...new Set([...(x.evaluateeTypeIds || []).filter((id) => id !== oldType), newType].filter(Boolean))] };
   });
   const toggle = (id) => set('sectionIds', f.sectionIds.includes(id) ? f.sectionIds.filter((x) => x !== id) : [...f.sectionIds, id]);
   const toggleEvaluatorGroup = (id) => set('evaluatorGroupIds', (f.evaluatorGroupIds || []).includes(id) ? f.evaluatorGroupIds.filter((x) => x !== id) : [...(f.evaluatorGroupIds || []), id]);
   const groups = (db.evaluatorGroups || []).filter((g) => g.active !== false && g.id !== 'ST');
+  const evaluatees = evaluateeRoles(db).filter((r) => r.active !== false || (f.evaluateeTypeIds || []).includes(r.id));
+  const toggleEvaluateeRole = (id) => set('evaluateeTypeIds', (f.evaluateeTypeIds || []).includes(id) ? f.evaluateeTypeIds.filter((x) => x !== id) : [...(f.evaluateeTypeIds || []), id]);
   return (
     <div className="acc-form">
       <div className="row">
@@ -114,11 +131,11 @@ function AccountForm({ initial, onSave, onCancel, saveLabel }) {
       </div>
       <p className="muted">People sign in with this email. Only official UB addresses (ending in ubaguio.edu) are accepted.</p>
       <div className="row">
-        <label>Role<br /><Select value={f.role} onChange={setRole}>{Object.entries(ROLES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select></label>
+        <label>Access role<br /><Select value={f.accessRoleId || f.role} onChange={setRole}>{db.accessRoles.filter((r) => r.active !== false || r.id === f.accessRoleId).map((r) => <option key={r.id} value={r.id}>{r.name} — {ROLES[r.template]}</option>)}</Select></label>
         <label>Position<br /><Select value={f.position} onChange={setPosition}>{positions.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select></label>
         {needsDept(f.role) && (
           <label>Department<br />
-            <Select value={f.dept} onChange={(v) => setF((x) => ({ ...x, dept: v, sectionIds: [] }))}>
+            <Select value={f.dept} onChange={setDepartment}>
               <option value="">Choose…</option>
               {deptChoices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
             </Select>
@@ -127,11 +144,18 @@ function AccountForm({ initial, onSave, onCancel, saveLabel }) {
       </div>
       {f.position === 'ci' && <p className="muted">Clinical Instructors are only in the School of Nursing, so only Nursing students evaluate them.</p>}
       {f.position === 'ci' && !nursingDepts(db).length && <div className="note warn">Add the School of Nursing under Departments first.</div>}
-      {['TP', 'NTP'].includes(f.role) && (
+      {f.role !== 'ST' && (
         <div className="row">
-          <span className="muted">Evaluation role(s):</span>
+          <span className="muted">Can evaluate as:</span>
           {groups.map((g) => <label key={g.id} className="inline"><input type="checkbox" checked={(f.evaluatorGroupIds || []).includes(g.id)} onChange={() => toggleEvaluatorGroup(g.id)} /> {g.name}</label>)}
           {!groups.length && <span className="muted">No evaluator groups are configured yet.</span>}
+        </div>
+      )}
+      {f.role !== 'ST' && (
+        <div className="row">
+          <span className="muted">Can be evaluated as:</span>
+          {evaluatees.map((r) => <label key={r.id} className="inline"><input type="checkbox" checked={(f.evaluateeTypeIds || []).includes(r.id)} onChange={() => toggleEvaluateeRole(r.id)} /> {r.name}</label>)}
+          {!evaluatees.length && <span className="muted">No evaluatee roles are configured yet.</span>}
         </div>
       )}
       {f.role === 'ST' && f.dept && (
@@ -223,8 +247,11 @@ function EvaluatorGroups() {
   const { db, act } = useApp();
   const [name, setName] = useState('');
   const [targetTypes, setTargetTypes] = useState([]);
+  const [evaluateeName, setEvaluateeName] = useState('');
+  const [evaluatorGroupIds, setEvaluatorGroupIds] = useState([]);
   const [msg, setMsg] = useState('');
   const toggle = (id) => setTargetTypes((xs) => xs.includes(id) ? xs.filter((x) => x !== id) : [...xs, id]);
+  const toggleEvaluator = (id) => setEvaluatorGroupIds((xs) => xs.includes(id) ? xs.filter((x) => x !== id) : [...xs, id]);
   const add = async () => {
     setMsg('');
     if (!name.trim()) return setMsg('Enter a name for the evaluator group.');
@@ -232,29 +259,110 @@ function EvaluatorGroups() {
     const result = await act('addEvaluatorGroup', { name, targetTypes });
     if (result) { setMsg(`${result.name} added. Assign staff to this group under Accounts, then create its evaluation form under Forms.`); setName(''); setTargetTypes([]); }
   };
+  const addEvaluatee = async () => {
+    setMsg('');
+    if (!evaluateeName.trim()) return setMsg('Enter a name for the evaluatee role.');
+    if (!evaluatorGroupIds.length) return setMsg('Choose at least one evaluator role.');
+    const result = await act('addEvaluateeRole', { name: evaluateeName, evaluatorGroupIds });
+    if (result) { setMsg(`${result.name} added. Assign people under Accounts, then create its forms and scoring rule.`); setEvaluateeName(''); setEvaluatorGroupIds([]); }
+  };
   const targetsFor = (id) => Object.keys(db.rules).filter((tt) => Object.hasOwn(db.rules[tt], id));
   const membersFor = (id) => db.users.filter((u) => evaluatorGroups(u).includes(id)).length;
+  const peopleFor = (id) => db.users.filter((u) => targetTypesOf(db, u).includes(id)).length;
+  const activeGroups = (db.evaluatorGroups || []).filter((g) => g.active !== false && g.id !== 'ST');
+  const activeTypes = evaluateeRoles(db).filter((r) => r.active !== false);
   return (
-    <Card title="Evaluator groups and roles">
-      <p className="muted">Add an evaluation role (for example, Department Head) without changing the app. Then assign staff to it in their account and create a form for each selected evaluatee category. System access roles such as HR and VP remain fixed.</p>
+    <Card title="Evaluation roles">
+      <p className="muted">Create and manage who can evaluate and who can receive an evaluation. Assign people to either or both roles under Accounts. Roles used by forms or historical evaluations are archived rather than erased.</p>
       <table>
-        <thead><tr><th>Evaluator group</th><th>Evaluates</th><th>Assigned accounts</th><th>Type</th></tr></thead>
+        <thead><tr><th>Evaluator role</th><th>Can evaluate</th><th>Assigned accounts</th><th>Status</th><th /></tr></thead>
         <tbody>{(db.evaluatorGroups || []).map((g) => (
           <tr key={g.id}>
-            <td><b>{groupName(db, g.id)}</b><div className="muted small">{g.id}</div></td>
-            <td>{targetsFor(g.id).map((tt) => TARGET_TYPES[tt]).join(', ') || '—'}</td>
+            <td>{g.id === 'ST' ? <b>{groupName(db, g.id)}</b> : <SaveInput value={g.name} onSave={(v) => act('updateEvaluatorGroup', { groupId: g.id, name: v })} />}<div className="muted small">{g.id}</div></td>
+            <td>{targetsFor(g.id).map((tt) => evaluateeRoleName(db, tt)).join(', ') || '—'}</td>
             <td>{membersFor(g.id)}</td>
-            <td>{g.builtIn ? 'Built in' : 'HR configured'}</td>
+            <td>{g.active === false ? 'Archived' : g.builtIn ? 'Built in' : 'Active'}</td>
+            <td>{g.id !== 'ST' && g.active === false && <button className="ghost" onClick={() => act('updateEvaluatorGroup', { groupId: g.id, active: true })}>Restore</button>}
+              {g.id !== 'ST' && g.active !== false && <button className="ghost" onClick={async () => {
+              if (await ask(`Archive ${g.name}?`, 'The role will no longer be used for new evaluations. Past assignments and results are kept.', { ok: 'Archive role', danger: true })) {
+                const result = await act('deleteEvaluatorGroup', { groupId: g.id });
+                if (result) setMsg(result.archived ? `${g.name} archived; its historical references are preserved.` : `${g.name} deleted because it was unused.`);
+              }
+            }}>Archive / delete</button>}</td>
           </tr>
         ))}</tbody>
       </table>
       <div className="row">
         <input className="wide" placeholder="New evaluator role, e.g. Department Head" value={name} onChange={(e) => setName(e.target.value)} />
-        <button onClick={add}>Add evaluator group</button>
+        <button onClick={add}>Add evaluator role</button>
       </div>
       <div className="row">
-        <span className="muted">This group evaluates:</span>
-        {Object.entries(TARGET_TYPES).map(([id, label]) => <label key={id} className="inline"><input type="checkbox" checked={targetTypes.includes(id)} onChange={() => toggle(id)} /> {label}</label>)}
+        <span className="muted">Can evaluate:</span>
+        {activeTypes.map((r) => <label key={r.id} className="inline"><input type="checkbox" checked={targetTypes.includes(r.id)} onChange={() => toggle(r.id)} /> {r.name}</label>)}
+      </div>
+      <h3 className="section-h">Evaluatee roles</h3>
+      <table>
+        <thead><tr><th>Role</th><th>Evaluated by</th><th>Assigned people</th><th>Status</th><th /></tr></thead>
+        <tbody>{evaluateeRoles(db).map((r) => (
+          <tr key={r.id}>
+            <td>{r.id === 'COLLEGE_FACULTY' ? <b>{r.name}</b> : <SaveInput value={r.name} onSave={(v) => act('updateEvaluateeRole', { roleId: r.id, name: v })} />}<div className="muted small">{r.id}</div></td>
+            <td>{Object.keys(db.rules[r.id] || {}).map((g) => groupName(db, g)).join(', ') || '—'}</td>
+            <td>{peopleFor(r.id)}</td>
+            <td>{r.active === false ? 'Archived' : r.builtIn ? 'Built in' : 'Active'}</td>
+            <td>{r.id !== 'COLLEGE_FACULTY' && r.active === false && <button className="ghost" onClick={() => act('updateEvaluateeRole', { roleId: r.id, active: true })}>Restore</button>}
+              {r.id !== 'COLLEGE_FACULTY' && r.active !== false && <button className="ghost" onClick={async () => {
+              if (await ask(`Archive ${r.name}?`, 'New tasks will stop using this role. Existing accounts, formulas, tasks, and results are preserved.', { ok: 'Archive role', danger: true })) {
+                const result = await act('deleteEvaluateeRole', { roleId: r.id });
+                if (result) setMsg(result.archived ? `${r.name} archived; historical references are preserved.` : `${r.name} deleted because it was unused.`);
+              }
+            }}>Archive / delete</button>}</td>
+          </tr>
+        ))}</tbody>
+      </table>
+      <div className="row">
+        <input className="wide" placeholder="New evaluatee role, e.g. Department Head" value={evaluateeName} onChange={(e) => setEvaluateeName(e.target.value)} />
+        <button onClick={addEvaluatee}>Add evaluatee role</button>
+      </div>
+      <div className="row">
+        <span className="muted">Evaluated by:</span>
+        {activeGroups.map((g) => <label key={g.id} className="inline"><input type="checkbox" checked={evaluatorGroupIds.includes(g.id)} onChange={() => toggleEvaluator(g.id)} /> {groupName(db, g.id)}</label>)}
+      </div>
+      {msg && <div className="note">{msg}</div>}
+    </Card>
+  );
+}
+
+function AccessRoles() {
+  const { db, act } = useApp();
+  const [name, setName] = useState('');
+  const [template, setTemplate] = useState('TP');
+  const [msg, setMsg] = useState('');
+  const add = async () => {
+    setMsg('');
+    if (!name.trim()) return setMsg('Enter a name for the access role.');
+    const result = await act('addAccessRole', { name, template });
+    if (result) { setMsg(`${result.name} added using the ${ROLES[result.template]} permission profile.`); setName(''); }
+  };
+  const assigned = (id) => db.users.filter((u) => u.accessRoleId === id).length;
+  return (
+    <Card title="Access roles">
+      <p className="muted">Each access role uses a predefined server-enforced permission profile. HR can create a clear label for a team, but cannot create arbitrary permissions or change a profile’s permission template. Student and built-in system profiles remain protected.</p>
+      <table><thead><tr><th>Access role</th><th>Permission profile</th><th>Assigned people</th><th>Status</th><th /></tr></thead>
+        <tbody>{db.accessRoles.map((r) => <tr key={r.id}>
+          <td>{r.builtIn ? <b>{accessRoleName(db, r.id)}</b> : <SaveInput value={r.name} onSave={(v) => act('updateAccessRole', { roleId: r.id, name: v })} />}</td>
+          <td>{ROLES[r.template]}</td><td>{assigned(r.id)}</td><td>{r.active === false ? 'Archived' : r.builtIn ? 'Built in' : 'Active'}</td>
+          <td>{!r.builtIn && r.active !== false && <button className="ghost" onClick={async () => {
+            if (await ask(`Archive ${r.name}?`, 'Accounts keep their current access. The role can no longer be assigned to new or edited accounts.', { ok: 'Archive role', danger: true })) {
+              const result = await act('deleteAccessRole', { roleId: r.id });
+              if (result) setMsg(result.archived ? `${r.name} archived; assigned accounts keep their existing permissions.` : `${r.name} deleted because it was unused.`);
+            }
+          }}>Archive / delete</button>}</td>
+        </tr>)}</tbody>
+      </table>
+      <div className="row">
+        <input className="wide" placeholder="New access role label" value={name} onChange={(e) => setName(e.target.value)} />
+        <Select value={template} onChange={setTemplate}>{Object.entries(ROLES).filter(([id]) => id !== 'ST').map(([id, label]) => <option key={id} value={id}>{label} permissions</option>)}</Select>
+        <button onClick={add}>Add access role</button>
       </div>
       {msg && <div className="note">{msg}</div>}
     </Card>
@@ -295,7 +403,7 @@ export function Accounts() {
   };
 
   const s = q.trim().toLowerCase();
-  const list = newestFirst(db.users).filter((u) => (!role || u.role === role) && (!dept || u.dept === dept) && (showInactive || u.active)
+  const list = newestFirst(db.users).filter((u) => (!role || (u.accessRoleId || u.role) === role) && (!dept || u.dept === dept) && (showInactive || u.active)
     && (!s || u.name.toLowerCase().includes(s) || u.username.toLowerCase().includes(s) || (u.email || '').toLowerCase().includes(s)));
   const { rows, bar } = usePages(list, `${role}|${dept}|${showInactive}|${s}`);
 
@@ -305,6 +413,7 @@ export function Accounts() {
         <b>Most student and teacher accounts are created when you import a class list.</b> Use this page for one person at a time, or to update a name, reset a password, or manage departments. New accounts get a temporary password that must be changed at first sign-in.
       </div>
       <Departments />
+      <AccessRoles />
       <EvaluatorGroups />
 
       {temp && <TempPasswordNote info={temp} onClose={() => setTemp(null)} />}
@@ -319,7 +428,7 @@ export function Accounts() {
       <Card title={`Accounts (${list.length})`} actions={
         <div className="row" style={{ margin: 0 }}>
           <input placeholder="Search name, username or email" value={q} onChange={(e) => setQ(e.target.value)} />
-          <Select value={role} onChange={setRole}><option value="">All roles</option>{Object.entries(ROLES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select>
+          <Select value={role} onChange={setRole}><option value="">All roles</option>{db.accessRoles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</Select>
           <Select value={dept} onChange={setDept}><option value="">All departments</option>{db.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select>
           <label className="inline muted"><input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} /> Show deactivated</label>
         </div>
@@ -329,14 +438,14 @@ export function Accounts() {
           <tbody>
             {rows.map((u) => editing === u.id ? (
               <tr key={u.id}><td colSpan={6}>
-                <AccountForm initial={{ name: u.name, username: u.username, email: u.email || '', role: u.role, position: u.position, dept: u.dept || '', sectionIds: enrolled(u.id), evaluatorGroupIds: u.evaluatorGroupIds || evaluatorGroups(u) }}
+                <AccountForm initial={{ name: u.name, username: u.username, email: u.email || '', role: u.role, accessRoleId: u.accessRoleId || u.role, position: u.position, dept: u.dept || '', sectionIds: enrolled(u.id), evaluatorGroupIds: u.evaluatorGroupIds || evaluatorGroups(u), evaluateeTypeIds: targetTypesOf(db, u) }}
                   onSave={update} onCancel={() => setEditing(null)} saveLabel="Save changes" />
               </td></tr>
             ) : (
               <tr key={u.id} className={u.active ? '' : 'inactive'}>
                 <td><span className="who-cell"><Avatar name={u.name} size={30} />{u.name}{u.id === user.id && <span className="muted"> (you)</span>}</span></td>
                 <td><code>{u.username}</code><br /><span className="muted">{u.email}</span></td>
-                <td>{POSITIONS[u.role]?.[u.position] || u.position}<br /><span className="muted">{ROLES[u.role]}</span></td>
+                <td>{POSITIONS[u.role]?.[u.position] || u.position}<br /><span className="muted">{accessRoleName(db, u.accessRoleId || u.role)}</span></td>
                 <td>{u.dept ? deptName(db, u.dept) : '—'}</td>
                 <td>
                   {!u.active ? <Badge kind="overdue">deactivated</Badge>

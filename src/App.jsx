@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AppProvider, useApp } from './lib/store';
-import { ROLES, POSITIONS, isTeacher } from './lib/logic';
+import { ROLES, POSITIONS, isTeacher, accessRoleName, targetTypesOf } from './lib/logic';
 import { Icon, Avatar, NavContext, AskHost } from './ui';
 import { HROverview, VpOverview } from './pages/Overview';
 import Tasks from './pages/Tasks';
@@ -74,7 +74,7 @@ function Login() {
 }
 
 // [key, label, icon, page, subtitle]
-function navFor(user) {
+function navFor(user, db) {
   const n = [];
   if (user.role === 'HR') {
     n.push(
@@ -91,6 +91,7 @@ function navFor(user) {
       ['policy', 'Evaluation rules', 'form', <Policy />, 'Change participation, rating, and release rules'],
       ['audit', 'Change history', 'lock', <AuditLog />, 'Review a record of important actions and changes'],
     );
+    if (targetTypesOf(db, user).length) n.push(['my-results', 'My results', 'star', <MyResults />, 'Your own evaluation results']);
   } else if (user.role === 'DIR') {
     n.push(
       ['home', 'Overview', 'home', <VpOverview />, 'A summary of the results released to you'],
@@ -98,12 +99,13 @@ function navFor(user) {
       ['analytics', 'Analytics', 'trend', <Analytics />, 'Trends, department comparisons and low-rated items'],
       ['formulas', 'Formula approvals', 'scale', <Formulas />, 'Rating formulas waiting for your approval'],
     );
+    if (targetTypesOf(db, user).length) n.push(['my-results', 'My results', 'star', <MyResults />, 'Your own evaluation results']);
   } else {
     // Clinical Instructors are evaluated but don't evaluate anyone
     if (user.position !== 'ci') n.push(['tasks', 'My evaluations', 'check', <Tasks />, 'The people you are asked to evaluate']);
     if (['dean', 'chair', 'principal', 'aprincipal'].includes(user.position)) n.push(['monitor', 'Department progress', 'chart', <Monitor deptOnly />, 'How many evaluations are done in your department']);
     if (user.position === 'dean' || user.position === 'principal') n.push(['dept', 'Department results', 'report', <DeptResults />, 'Your department results, item by item']);
-    if (isTeacher(user) || user.position === 'dean' || user.role === 'NTP') n.push(['results', 'My results', 'star', <MyResults />, 'Your evaluation results and your classes\' response progress']);
+    if (isTeacher(user) || user.position === 'dean' || user.role === 'NTP' || targetTypesOf(db, user).length) n.push(['results', 'My results', 'star', <MyResults />, 'Your evaluation results and your classes\' response progress']);
   }
   n.push(
     ['notifs', 'Notifications', 'bell', <Notifications />, 'Reminders and updates sent to you'],
@@ -117,7 +119,7 @@ const HR_NAV_SECTIONS = [
   { label: 'Run an evaluation', keys: ['periods', 'classes', 'assign', 'monitor'] },
   { label: 'Results', keys: ['reports', 'analytics'] },
   { label: 'System setup', keys: ['accounts', 'forms', 'formulas', 'policy'] },
-  { label: 'Other', keys: ['audit', 'notifs', 'account'] },
+  { label: 'Other', keys: ['audit', 'notifs', 'account', 'my-results'] },
 ];
 
 /** An error pinned to the top of the screen, so it is seen without scrolling. Closes by itself after 10 seconds. */
@@ -145,7 +147,7 @@ function Shell() {
   if (!user) return <Login />;
   if (user.mustChangePassword) return <ForcedPasswordChange />;
   if (!db) return <div className="login-loading">{error || 'Loading…'}</div>;
-  const nav = navFor(user);
+  const nav = navFor(user, db);
   const navSections = user.role === 'HR'
     ? HR_NAV_SECTIONS.map((section) => ({ ...section, items: nav.filter(([k]) => section.keys.includes(k)) })).filter((section) => section.items.length)
     : [{ label: '', items: nav }];
@@ -186,7 +188,7 @@ function Shell() {
           </nav>
           <div className="who">
             <Avatar name={user.name} />
-            <div className="who-text"><b>{user.name}</b><span>{position && position !== ROLES[user.role] ? position : ROLES[user.role]}</span></div>
+            <div className="who-text"><b>{user.name}</b><span>{position && position !== ROLES[user.role] ? position : accessRoleName(db, user.accessRoleId || user.role)}</span></div>
             <button className="icon-btn" onClick={logout} title="Log out" aria-label="Log out"><Icon name="logout" /></button>
           </div>
         </aside>

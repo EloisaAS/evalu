@@ -164,9 +164,10 @@ You can also add a section by hand. Practicum, internship and field trip subject
 This is the single HR page for both evaluator percentages and the final-score method. The starting rules include College faculty 40 / 40 / 20 and Basic Education 40 / 20 / 20 / 20 (Table 6). HR can adjust the groups and percentages or choose equal averaging, then preview and test the result. Formula changes go through VP approval; each period keeps the formula version it started with.
 
 #### Accounts
-- **Add account**: enter a username, full name, role, position and department (students also choose their classes). The app shows a **temporary password once**, so write it down and give it to the person privately.
-- **Evaluator groups and roles**: HR can add evaluator groups (for example, Department Head), choose which evaluatee categories they apply to, and assign those groups to staff accounts. System access roles such as HR and VP remain fixed.
-- **Edit**: change someone's name, role, department or classes.
+- **Add account**: enter a username, full name, access role, position and department (students also choose their classes). The app shows a **temporary password once**, so write it down and give it to the person privately.
+- **Evaluation roles**: HR can add, rename and archive evaluator roles and evaluatee categories, assign one or more of each to an account, and build evaluation tasks for each category. Students and College Faculty remain protected built-in roles. Roles used by forms, tasks or results are archived instead of being erased.
+- **Access roles**: HR can create a custom access-role label using a predefined permission profile. The server continues to enforce the existing permission templates; HR cannot create arbitrary permissions or change a custom role's template after creation. Built-in access profiles remain protected.
+- **Edit**: change someone's name, access role, evaluator/evaluatee assignments, department or classes.
 - **Reset password**: gives the person a new temporary password and signs them out everywhere.
 - **Deactivate**: the person can't sign in any more and gets no new tasks. Their past evaluations stay in the reports. **Reactivate** undoes this.
 - Use the search box, the role filter and *Show deactivated* to find people.

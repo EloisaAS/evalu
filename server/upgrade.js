@@ -1,6 +1,6 @@
 // Brings a database made by an earlier version of evalU up to date, without losing data.
 // Runs once at start-up (see seed.js). Safe to run many times: it only fills in what is missing.
-import { formForTask, uid, UB_DEPARTMENTS, DEFAULT_POLICY, DEFAULT_EVALUATOR_GROUPS, storeResults } from '../src/lib/logic.js';
+import { formForTask, uid, UB_DEPARTMENTS, DEFAULT_POLICY, DEFAULT_EVALUATOR_GROUPS, DEFAULT_EVALUATEE_ROLES, DEFAULT_ACCESS_ROLES, targetType, userById, storeResults } from '../src/lib/logic.js';
 import { installUbForms, UB_FORM_MARK } from '../src/lib/ubInstall.js';
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -11,8 +11,23 @@ export function upgradeData(db) {
   const set = (obj, key, value) => { obj[key] = value; changed = true; };
   db.requests ||= [];
   if (!Array.isArray(db.evaluatorGroups)) set(db, 'evaluatorGroups', []);
+  if (!Array.isArray(db.evaluateeRoles)) set(db, 'evaluateeRoles', []);
+  if (!Array.isArray(db.accessRoles)) set(db, 'accessRoles', []);
   for (const group of DEFAULT_EVALUATOR_GROUPS) {
     if (!db.evaluatorGroups.some((g) => g.id === group.id)) { db.evaluatorGroups.push({ ...group }); changed = true; }
+  }
+  for (const role of DEFAULT_EVALUATEE_ROLES) {
+    if (!db.evaluateeRoles.some((r) => r.id === role.id)) { db.evaluateeRoles.push({ ...role }); changed = true; }
+  }
+  for (const role of DEFAULT_ACCESS_ROLES) {
+    if (!db.accessRoles.some((r) => r.id === role.id)) { db.accessRoles.push({ ...role }); changed = true; }
+  }
+  for (const user of db.users) {
+    if (!user.accessRoleId || !db.accessRoles.some((r) => r.id === user.accessRoleId)) set(user, 'accessRoleId', user.role);
+    if (!Array.isArray(user.evaluateeTypeIds)) {
+      const type = targetType(db, user);
+      set(user, 'evaluateeTypeIds', type ? [type] : []);
+    }
   }
   // a system with no departments yet starts with the University of Baguio departments
   if (!db.departments.length) { db.departments.push(...clone(UB_DEPARTMENTS)); changed = true; }
@@ -97,6 +112,10 @@ export function upgradeData(db) {
 
   // FR4: remember which form version each submitted evaluation used
   for (const t of db.tasks) {
+    if (!t.targetType) {
+      const type = targetType(db, userById(db, t.targetId));
+      if (type) set(t, 'targetType', type);
+    }
     if (t.response && !t.response.instrumentId) {
       const ins = formForTask(db, t);
       if (ins) { t.response.instrumentId = ins.id; changed = true; }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { useApp } from '../lib/store';
-import { computeTarget, canSeeOwn, sectionStats, STAGE_LABEL, THRESHOLD, isExemptSection } from '../lib/logic';
+import { computeTarget, canSeeOwn, sectionStats, sectionStatsByRole, STAGE_LABEL, THRESHOLD, isExemptSection, targetTypesOf, evaluateeRoleName } from '../lib/logic';
 import { Card, Badge, Meter, Empty, Icon, RuleNote } from '../ui';
 import { ResultCard, PastRecords } from './Reports';
 import { QrButton } from './ClassQr';
@@ -54,33 +54,30 @@ export function Notifications() {
 const PRINTS = [['comp', 'Print overall result'], ['eval', 'Print per-question result'], ['verb', 'Print comments']];
 function MyPeriodResult({ period }) {
   const { db, user } = useApp();
-  const res = computeTarget(db, period.id, user.id);
-  const sheets = evalSheetsOf(db, period.id, res);
+  const results = targetTypesOf(db, user).map((type) => computeTarget(db, period.id, user.id, { targetType: type }));
   const [what, setWhat] = useState(null); // which UB printout is being printed right now
-  const print = (w) => {
-    flushSync(() => setWhat(w));
+  const print = (kind, type) => {
+    flushSync(() => setWhat({ kind, type }));
     document.body.classList.add('print-one'); // print only this period
     window.print();
     document.body.classList.remove('print-one');
     setWhat(null);
   };
-  const show = (w) => !what || what === w; // Ctrl+P on the page still prints everything
-  const buttons = (
-    <div className="print-btns no-print">
-      {PRINTS.map(([w, label]) => <button key={w} className="ghost" onClick={() => print(w)} disabled={w === 'eval' && !sheets.length}>{label}</button>)}
-    </div>
-  );
+  const show = (kind, type) => !what || (what.kind === kind && what.type === type); // Ctrl+P on the page still prints everything
   return (
     <div className={'my-period' + (what ? ' print-this' : '')}>
-      <Card title={period.name} actions={buttons}>
-        <div className="no-print"><ResultCard res={res} db={db} periodId={period.id} own /></div>
-        {/* UB's formal printout: only on paper / PDF, never on screen */}
-        <div className="ub-mine screen-hidden">
-          {show('comp') && <div className="ub-page"><CompSheet res={res} period={period} ctrl="—" db={db} /></div>}
-          {show('eval') && sheets.map((sh) => <EvalSheet key={sh.group + (sh.section?.id || '')} db={db} period={period} res={res} sheet={sh} />)}
-          {show('verb') && <div><VerbatimSheet db={db} period={period} res={res} /></div>}
-        </div>
-      </Card>
+      {results.map((res) => {
+        const sheets = evalSheetsOf(db, period.id, res);
+        const buttons = <div className="print-btns no-print">{PRINTS.map(([kind, label]) => <button key={kind} className="ghost" onClick={() => print(kind, res.type)} disabled={kind === 'eval' && !sheets.length}>{label}</button>)}</div>;
+        return <Card key={res.type} title={`${period.name} · ${evaluateeRoleName(db, res.type)}`} actions={buttons}>
+          <div className="no-print"><ResultCard res={res} db={db} periodId={period.id} own /></div>
+          <div className="ub-mine screen-hidden">
+            {show('comp', res.type) && <div className="ub-page"><CompSheet res={res} period={period} ctrl="—" db={db} /></div>}
+            {show('eval', res.type) && sheets.map((sh) => <EvalSheet key={sh.group + (sh.section?.id || '')} db={db} period={period} res={res} sheet={sh} />)}
+            {show('verb', res.type) && <div><VerbatimSheet db={db} period={period} res={res} /></div>}
+          </div>
+        </Card>;
+      })}
     </div>
   );
 }
@@ -99,17 +96,18 @@ export function MyResults() {
       {myClasses.length > 0 && open.length > 0 && (
         <div className="no-print"><Card title="Student response progress for my classes">
           <p className="muted">At least half of the class plus one must answer, or that class is left out of your result. Tip: show the class QR code in class so students can answer on their phones right away.</p>
-          {open.flatMap((p) => myClasses.map((s) => {
-            const st = sectionStats(db, p.id, s.id);
-            return (
-              <div key={p.id + s.id} className="meter-row big">
-                <span><b>{s.code}</b> <span className="muted">{s.subject}{open.length > 1 ? ` · ${p.name}` : ''}</span></span>
+          {open.flatMap((p) => myClasses.flatMap((s) => {
+            const stats = sectionStatsByRole(db, p.id, s.id);
+            const rows = stats.length ? stats : [sectionStats(db, p.id, s.id)];
+            return rows.map((st) => (
+              <div key={`${p.id}|${s.id}|${st.targetRole || ''}`} className="meter-row big">
+                <span><b>{s.code}</b> <span className="muted">{s.subject}{st.targetRole ? ` · ${evaluateeRoleName(db, st.targetRole)}` : ''}{open.length > 1 ? ` · ${p.name}` : ''}</span></span>
                 <Meter value={st.rate} mark={THRESHOLD} />
                 <b>{st.responded}/{st.required}</b>
                 {!st.required ? <span className="muted">no tasks yet</span> : st.belowHalf ? <Badge kind="overdue">needs {st.needed - st.responded} more</Badge> : <Badge kind="completed">enough responses</Badge>}
                 <QrButton sections={[s]} label="Show QR code" />
               </div>
-            );
+            ));
           }))}
         </Card></div>
       )}

@@ -6,7 +6,7 @@
 import { useState } from 'react';
 import { useApp } from '../lib/store';
 import {
-  computeTarget, deptName, groupName, interpretation, bandTable, policyFor, DEFAULT_POLICY, round2, targetsOf, targetType,
+  computeTarget, deptName, groupName, interpretation, bandTable, policyFor, DEFAULT_POLICY, round2, targetsOf, targetTypesOf, evaluateeRoleName,
   formOfTask, itemStats, itemCategory, responseScore, commentParts,
 } from '../lib/logic';
 import { Select, PrintButton, Empty } from '../ui';
@@ -95,7 +95,7 @@ export function CompSheet({ res, period, ctrl, db }) {
 
 /** The answered evaluations of a person, one entry per printed "Performance Evaluation" sheet. */
 export function evalSheetsOf(db, periodId, res) {
-  const answered = db.tasks.filter((t) => t.periodId === periodId && t.targetId === res.targetId && t.response && !t.response.redacted);
+  const answered = db.tasks.filter((t) => t.periodId === periodId && t.targetId === res.targetId && (t.targetType || res.type) === res.type && t.response && !t.response.redacted);
   const out = [];
   for (const g of Object.keys(res.groups)) {
     if (g === 'ST') {
@@ -177,7 +177,7 @@ export function VerbatimSheet({ db, period, res }) {
         <span className="verb-name">{res.target.name.toUpperCase()}</span>
       </div>
       {groups.map((g) => {
-        const tasks = db.tasks.filter((x) => x.periodId === period.id && x.targetId === res.targetId && x.group === g);
+        const tasks = db.tasks.filter((x) => x.periodId === period.id && x.targetId === res.targetId && (x.targetType || res.type) === res.type && x.group === g);
         const parts = tasks.map((x) => commentParts(x.response?.comment)).filter(Boolean);
         return (
           <section key={g}>
@@ -206,7 +206,7 @@ export function UbPacket({ db, period, res, ctrl, what = 'all' }) {
 }
 
 const KINDS = { teach: 'Faculty and Clinical Instructors', dean: 'Deans and Principals', ntp: 'Non-teaching personnel' };
-const kindOf = (type) => (type === 'DEAN' ? 'dean' : isNtp(type) ? 'ntp' : 'teach');
+const kindOf = (type, user) => (type === 'DEAN' || ['dean', 'principal'].includes(user?.position) ? 'dean' : isNtp(type) || user?.role === 'NTP' ? 'ntp' : 'teach');
 const WHAT = {
   comp: 'Comprehensive report (one sheet per person)',
   eval: 'Performance evaluation (per evaluator, every question)',
@@ -223,12 +223,14 @@ export function UbPrints({ periodId }) {
   const [kind, setKind] = useState('teach');
   const [who, setWho] = useState('');
   const [perPage, setPerPage] = useState('1');
-  const people = targetsOf(db)
-    .filter((u) => kindOf(targetType(db, u)) === kind && (!dept || u.dept === dept))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  const results = people.filter((u) => !who || u.id === who).map((u) => computeTarget(db, periodId, u.id))
+  const people = targetsOf(db).flatMap((u) => targetTypesOf(db, u)
+    .filter((type) => kindOf(type, u) === kind && (!dept || u.dept === dept))
+    .map((type) => ({ user: u, type })))
+    .sort((a, b) => a.user.name.localeCompare(b.user.name));
+  const peopleKey = (x) => `${x.user.id}|${x.type}`;
+  const results = people.filter((x) => !who || peopleKey(x) === who).map(({ user, type }) => computeTarget(db, periodId, user.id, { targetType: type }))
     .filter((r) => Object.values(r.groups).some((g) => (what === 'comp' ? g.required : g.responded > 0)));
-  const ctrl = (r) => people.findIndex((u) => u.id === r.targetId) + 1;
+  const ctrl = (r) => people.findIndex((x) => x.user.id === r.targetId && x.type === r.type) + 1;
   const pages = what === 'comp' ? results.length : results.reduce((a, r) => a + (what !== 'verb' ? evalSheetsOf(db, periodId, r).length : 0) + (what !== 'eval' ? 1 : 0) + (what === 'all' ? 1 : 0), 0);
   return (
     <>
@@ -236,7 +238,7 @@ export function UbPrints({ periodId }) {
         <label className="inline"><span className="muted">Print</span> <Select value={what} onChange={setWhat}>{Object.entries(WHAT).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select></label>
         <label className="inline"><span className="muted">Who</span> <Select value={kind} onChange={(v) => { setKind(v); setWho(''); }}>{Object.entries(KINDS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select></label>
         <label className="inline"><span className="muted">Department</span> <Select value={dept} onChange={(v) => { setDept(v); setWho(''); }}><option value="">All departments</option>{db.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select></label>
-        <label className="inline"><span className="muted">Person</span> <Select value={who} onChange={setWho}><option value="">Everyone listed ({people.length})</option>{people.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</Select></label>
+        <label className="inline"><span className="muted">Person</span> <Select value={who} onChange={setWho}><option value="">Everyone listed ({people.length})</option>{people.map((x) => <option key={peopleKey(x)} value={peopleKey(x)}>{x.user.name} · {evaluateeRoleName(db, x.type)}</option>)}</Select></label>
         {what === 'comp' && <label className="inline"><span className="muted">On paper</span> <Select value={perPage} onChange={setPerPage}><option value="1">One report per page</option><option value="3">Three per page (saves paper)</option></Select></label>}
         <PrintButton label={`Print / save as PDF (${pages} ${pages === 1 ? 'sheet' : 'sheets'})`} />
       </div>

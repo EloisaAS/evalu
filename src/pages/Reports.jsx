@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../lib/store';
 import { analyzeComment, summarizeComments, SENTIMENT_LABEL, TOPICS } from '../lib/comments';
 import {
-  TARGET_TYPES, computeAll, computeTarget, canSeeAll, canSeeComments, canSeeDept, deptName, groupName, userById, sectionStats,
-  itemStats, formOfTask, itemCategory, hasFinal, pendingApprovals, policyFor, approvalRuleText, formulaWords, howInWords, isEvaluatee, stageAtLeast, targetsOf, commentParts, targetType,
+  computeAll, computeTarget, canSeeAll, canSeeComments, canSeeDept, deptName, groupName, userById,
+  itemStats, formOfTask, itemCategory, hasFinal, pendingApprovals, policyFor, approvalRuleText, formulaWords, howInWords, isEvaluatee, stageAtLeast, targetsOf, commentParts, targetType, evaluateeRoleName, sectionStatsByRole,
 } from '../lib/logic';
 import { Card, Badge, RuleNote, PeriodPicker, Select, Meter, Stat, Stats, Empty, Avatar, ItemTable, PrintButton, fmt, pct, newestFirst, usePages, ask } from '../ui';
 import { ReleaseSteps } from './Overview';
@@ -124,7 +124,7 @@ export function ResultCard({ res, db, periodId, own = false }) {
         {!own && <Avatar name={res.target.name} size={44} />}
         <div className="result-who">
           {!own && <b>{res.target.name}</b>}
-          <span className="muted">{TARGET_TYPES[res.type]} · {deptName(db, res.target.dept)}</span>
+          <span className="muted">{evaluateeRoleName(db, res.type)} · {deptName(db, res.target.dept)}</span>
         </div>
         <div className={`score-box ${shown ? '' : 'none'}`}>
           <span className="score-num">{shown ? fmt(res.final) : '—'}</span>
@@ -186,8 +186,8 @@ export function ResultCard({ res, db, periodId, own = false }) {
 export function DeptSummary({ db, periodId, dept }) {
   const people = new Set(targetsOf(db).filter((u) => u.dept === dept).map((u) => u.id));
   const tasks = db.tasks.filter((t) => t.periodId === periodId && people.has(t.targetId));
-  const valid = new Set(db.sections.filter((s) => s.dept === dept).map((s) => sectionStats(db, periodId, s.id)).filter((s) => s.valid).map((s) => s.section.id));
-  const counted = tasks.filter((t) => t.group !== 'ST' || valid.has(t.sectionId));
+  const valid = new Set(db.sections.filter((s) => s.dept === dept).flatMap((s) => sectionStatsByRole(db, periodId, s.id).filter((st) => st.valid).map((st) => `${s.id}|${st.targetRole}`)));
+  const counted = tasks.filter((t) => t.group !== 'ST' || valid.has(`${t.sectionId}|${t.targetType || targetType(db, userById(db, t.targetId))}`));
   const groups = [...new Set(counted.map((t) => t.group))];
   const respondents = counted.filter((t) => t.response).length;
   const results = computeAll(db, periodId).filter((r) => r.target.dept === dept);
@@ -342,7 +342,7 @@ const commentWords = (c) => {
 };
 
 /** The formal printout of a Reports tab (only on paper / PDF): UB header + a bordered table. */
-function FormalPrint({ tab, db, pid, period, all, secRows, bySubject, dept, selected }) {
+function FormalPrint({ tab, db, pid, period, all, secRows, bySubject, dept, selected, selectedType }) {
   const pol = policyFor(db, pid);
   const ratingWord = (x, ntp = false) => rw(x, ntp, pol);
   const SummarySheet = (props) => <Sheet policy={pol} {...props} />;
@@ -353,7 +353,7 @@ function FormalPrint({ tab, db, pid, period, all, secRows, bySubject, dept, sele
     sheet = <SummarySheet title="Evaluation Summary of Personnel" period={period}
       info={[['Personnel evaluated', all.length], ['With a final rating', all.filter(hasFinal).length]]}
       sections={[{ columns: ['Name', 'Type', 'Department', 'Final rating', 'Interpretation', 'Remarks'],
-        rows: all.map((r) => [r.target.name.toUpperCase(), TARGET_TYPES[r.type], deptName(db, r.target.dept), twoDp(r.final), ratingWord(r.final, ntpOf(r)), remark(r)]) }]} />;
+        rows: all.map((r) => [r.target.name.toUpperCase(), evaluateeRoleName(db, r.type), deptName(db, r.target.dept), twoDp(r.final), ratingWord(r.final, ntpOf(r)), remark(r)]) }]} />;
   } else if (tab === 'subject') {
     sheet = <SummarySheet title="Faculty Evaluation Summary per Subject" period={period}
       sections={[{ columns: ['Subject', 'Sections', 'Counted sections', 'Average rating', 'Interpretation'],
@@ -365,12 +365,12 @@ function FormalPrint({ tab, db, pid, period, all, secRows, bySubject, dept, sele
   } else if (tab === 'section') {
     sheet = <SummarySheet title="Faculty Evaluation Summary per Section" period={period}
       info={[['Rule', 'A class counts only if at least half of the class plus one answered']]}
-      sections={[{ columns: ['Section', 'Subject', 'Faculty', 'Respondents', 'Response rate', 'Result', 'Rating', 'Interpretation'],
-        rows: secRows.map((s) => [s.section.code, s.section.subject, userById(db, s.section.facultyId)?.name.toUpperCase(), `${s.responded} of ${s.required}`, pct(s.rate), s.valid ? 'Counted' : 'Excluded', twoDp(s.score), s.valid ? ratingWord(s.score) : '—']) }]} />;
+      sections={[{ columns: ['Section', 'Subject', 'Faculty', 'Evaluatee role', 'Respondents', 'Response rate', 'Result', 'Rating', 'Interpretation'],
+        rows: secRows.map((s) => [s.section.code, s.section.subject, userById(db, s.section.facultyId)?.name.toUpperCase(), evaluateeRoleName(db, s.targetRole), `${s.responded} of ${s.required}`, pct(s.rate), s.valid ? 'Counted' : 'Excluded', twoDp(s.score), s.valid ? ratingWord(s.score) : '—']) }]} />;
   } else if (tab === 'department') {
     const people = new Set(targetsOf(db).filter((u) => u.dept === dept).map((u) => u.id));
-    const valid = new Set(db.sections.filter((s) => s.dept === dept).map((s) => sectionStats(db, pid, s.id)).filter((s) => s.valid).map((s) => s.section.id));
-    const counted = db.tasks.filter((t) => t.periodId === pid && people.has(t.targetId) && (t.group !== 'ST' || valid.has(t.sectionId)));
+    const valid = new Set(db.sections.filter((s) => s.dept === dept).flatMap((s) => sectionStatsByRole(db, pid, s.id).filter((st) => st.valid).map((st) => `${s.id}|${st.targetRole}`)));
+    const counted = db.tasks.filter((t) => t.periodId === pid && people.has(t.targetId) && (t.group !== 'ST' || valid.has(`${t.sectionId}|${t.targetType || targetType(db, userById(db, t.targetId))}`)));
     const results = all.filter((r) => r.target.dept === dept);
     const withScore = results.filter(hasFinal);
     const avg = withScore.length ? withScore.reduce((a, r) => a + r.final, 0) / withScore.length : null;
@@ -380,7 +380,7 @@ function FormalPrint({ tab, db, pid, period, all, secRows, bySubject, dept, sele
     const groupSections = [...new Set(answered.map(keyOf))].map((k) => {
       const ts = answered.filter((t) => keyOf(t) === k);
       const g = ts[0].group;
-      const kinds = [...new Set(ts.map((t) => TARGET_TYPES[targetType(db, userById(db, t.targetId))]))].join(', ');
+      const kinds = [...new Set(ts.map((t) => evaluateeRoleName(db, t.targetType || targetType(db, userById(db, t.targetId)))))].join(', ');
       const catOf = categoryLookup(db, ts);
       const order = catOf?.order || {};
       const stats = itemStats(ts, policyFor(db, pid).lowItem).sort((a, b) => (order[a.criterionId] ?? 999) - (order[b.criterionId] ?? 999));
@@ -402,8 +402,8 @@ function FormalPrint({ tab, db, pid, period, all, secRows, bySubject, dept, sele
       sections={[{ columns: ['Evaluated', 'From', 'Comment'], rows }]} />;
   } else if (tab === 'individual' && selected) {
     // one person: UB's own printouts (Comprehensive, Performance Evaluation sheets, Verbatim)
-    const res = computeTarget(db, pid, selected);
-    return <div className="print-only"><div className="ub-mine"><UbPacket db={db} period={period} res={res} ctrl={all.findIndex((r) => r.targetId === selected) + 1} what="all" /></div></div>;
+    const res = computeTarget(db, pid, selected, { targetType: selectedType });
+    return <div className="print-only"><div className="ub-mine"><UbPacket db={db} period={period} res={res} ctrl={all.findIndex((r) => r.targetId === selected && r.type === selectedType) + 1} what="all" /></div></div>;
   }
   return sheet && <div className="print-only sum-print">{sheet}</div>;
 }
@@ -416,12 +416,15 @@ export default function Reports() {
   const [pidSel, setPid] = useState(periods[periods.length - 1]?.id);
   const pid = periods.some((p) => p.id === pidSel) ? pidSel : periods[periods.length - 1]?.id; // newest if none chosen yet
   const [tab, setTab] = useState(user.role === 'HR' ? 'ubprint' : 'overall');
-  const [tid, setTid] = useState('');
+  const [resultKey, setResultKey] = useState('');
   const [deptSel, setDept] = useState(db.departments[0]?.id);
   const dept = db.departments.some((d) => d.id === deptSel) ? deptSel : db.departments[0]?.id;
   const all = useMemo(() => (pid ? computeAll(db, pid) : []), [db, pid]);
   const period = db.periods.find((p) => p.id === pid);
-  const selected = tid || all[0]?.targetId;
+  const keyOfResult = (r) => `${r.targetId}|${r.type}`;
+  const selectedResult = all.find((r) => keyOfResult(r) === resultKey) || all[0];
+  const selected = selectedResult?.targetId;
+  const selectedType = selectedResult?.type;
   // FR20: opening a person's result or a department summary is recorded in the audit log
   useEffect(() => {
     if (tab === 'individual' && selected && pid) act('logView', { periodId: pid, targetId: selected, what: 'individual' });
@@ -429,7 +432,7 @@ export default function Reports() {
   }, [tab, selected, dept, pid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!periods.length) return <Card><Empty icon="clock" title="No results released to you yet">Results appear here after HR closes a period and releases them.</Empty></Card>;
-  const secRows = db.sections.map((s) => sectionStats(db, pid, s.id)).filter((s) => s.required);
+  const secRows = db.sections.flatMap((s) => sectionStatsByRole(db, pid, s.id)).filter((s) => s.required);
   const bySubject = {};
   secRows.forEach((s) => { (bySubject[s.section.subject] ||= []).push(s); });
   const tabs = [['overall', 'Overall'], ['subject', 'Per subject'], ['section', 'Per section'], ['individual', 'Individual report'], ['department', 'Department summary']];
@@ -456,13 +459,13 @@ export default function Reports() {
     <Card actions={tab !== 'ubprint' && <PrintButton label={tab === 'individual' ? 'Print UB report' : 'Print'} />}>
       <div className="tabs no-print" role="tablist">{tabs.map(([k, l]) => <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}</div>
       {tab !== 'ubprint' && !FORMAL_TABS.includes(tab) && <h3 className="print-only">evalU · {period.name} · {tabs.find((t) => t[0] === tab)?.[1]}</h3>}
-      {FORMAL_TABS.includes(tab) && <FormalPrint tab={tab} db={db} pid={pid} period={period} all={all} secRows={secRows} bySubject={bySubject} dept={dept} selected={selected} />}
+      {FORMAL_TABS.includes(tab) && <FormalPrint tab={tab} db={db} pid={pid} period={period} all={all} secRows={secRows} bySubject={bySubject} dept={dept} selected={selected} selectedType={selectedType} />}
       <div className={FORMAL_TABS.includes(tab) ? 'no-print' : undefined}>
       {tab === 'overall' && (
         <table>
           <thead><tr><th>Name</th><th>Type</th><th>Department</th><th>Final score</th><th>Status</th></tr></thead>
           <tbody>{all.map((r) => (
-            <tr key={r.targetId}><td><button className="link" onClick={() => { setTid(r.targetId); setTab('individual'); }}>{r.target.name}</button></td><td>{TARGET_TYPES[r.type]}</td><td>{deptName(db, r.target.dept)}</td>
+            <tr key={keyOfResult(r)}><td><button className="link" onClick={() => { setResultKey(keyOfResult(r)); setTab('individual'); }}>{r.target.name}</button></td><td>{evaluateeRoleName(db, r.type)}</td><td>{deptName(db, r.target.dept)}</td>
               <td><div className="meter-row"><Meter value={r.final == null ? 0 : r.final / 4} tone="brand" /><b>{fmt(r.final)}</b></div></td>
               <td>{r.status === 'complete' ? <Badge kind="completed">complete</Badge> : r.status === 'reweighted' ? <Badge kind="info">over {r.basis}%</Badge> : <Badge kind="pending">{STATUS_TEXT[r.status].toLowerCase()}</Badge>}</td></tr>
           ))}</tbody>
@@ -479,17 +482,17 @@ export default function Reports() {
       )}
       {tab === 'section' && (
         <table>
-          <thead><tr><th>Section</th><th>Faculty</th><th>Responded</th><th>Rate</th><th>Result</th><th>Score</th></tr></thead>
+          <thead><tr><th>Section</th><th>Faculty</th><th>Evaluatee role</th><th>Responded</th><th>Rate</th><th>Result</th><th>Score</th></tr></thead>
           <tbody>{secRows.map((s) => (
-            <tr key={s.section.id}><td>{s.section.code}</td><td>{userById(db, s.section.facultyId).name}</td><td><div className="meter-row"><Meter value={s.rate} mark={0.5} /><span>{s.responded}/{s.required} <span className="muted">(needs {s.needed})</span></span></div></td><td>{pct(s.rate)}</td>
+            <tr key={`${s.section.id}|${s.targetRole}`}><td>{s.section.code}</td><td>{userById(db, s.section.facultyId).name}</td><td>{evaluateeRoleName(db, s.targetRole)}</td><td><div className="meter-row"><Meter value={s.rate} mark={0.5} /><span>{s.responded}/{s.required} <span className="muted">(needs {s.needed})</span></span></div></td><td>{pct(s.rate)}</td>
               <td>{s.valid ? <Badge kind="completed">counted</Badge> : <Badge kind="overdue">excluded</Badge>}</td><td>{fmt(s.score)}</td></tr>
           ))}</tbody>
         </table>
       )}
       {tab === 'individual' && (
         <>
-          <label className="inline no-print"><span className="muted">Person</span> <Select value={selected} onChange={setTid}>{all.map((r) => <option key={r.targetId} value={r.targetId}>{r.target.name}</option>)}</Select></label>
-          {selected && <ResultCard res={computeTarget(db, pid, selected)} db={db} periodId={pid} />}
+          <label className="inline no-print"><span className="muted">Person</span> <Select value={selectedResult ? keyOfResult(selectedResult) : ''} onChange={setResultKey}>{all.map((r) => <option key={keyOfResult(r)} value={keyOfResult(r)}>{r.target.name} — {evaluateeRoleName(db, r.type)}</option>)}</Select></label>
+          {selected && <ResultCard res={computeTarget(db, pid, selected, { targetType: selectedType })} db={db} periodId={pid} />}
         </>
       )}
       {tab === 'department' && (
@@ -515,10 +518,12 @@ export function DeptResults() {
   const periods = db.periods.filter((p) => canSeeDept(user, p));
   const [pidSel, setPid] = useState(periods[periods.length - 1]?.id);
   const pid = periods.some((p) => p.id === pidSel) ? pidSel : periods[periods.length - 1]?.id; // newest if none chosen yet
-  const [tid, setTid] = useState('');
+  const [resultKey, setResultKey] = useState('');
   const people = useMemo(() => (pid ? computeAll(db, pid).filter((r) => r.target.dept === user.dept && r.targetId !== user.id) : []), [db, pid, user]);
   const requests = db.requests.filter((r) => r.headId === user.id);
-  const selected = tid || '';
+  const keyOfResult = (r) => `${r.targetId}|${r.type}`;
+  const selectedResult = people.find((r) => keyOfResult(r) === resultKey);
+  const selected = selectedResult?.targetId || '';
   useEffect(() => { if (pid) act('logView', { periodId: pid, what: 'department' }); }, [pid]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (pid && selected) act('logView', { periodId: pid, targetId: selected, what: 'individual' }); }, [pid, selected]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!periods.length) return <Card><Empty icon="clock" title="No department results released yet">Department results appear after HR releases a period to faculty.</Empty></Card>;
@@ -529,21 +534,21 @@ export function DeptResults() {
           <p className="muted">These results were requested by another office and released to you, as HRMC policy requires. Any further release is your responsibility.</p>
           <table><thead><tr><th>When</th><th>Results of</th><th>Period</th><th>Requested by</th><th /></tr></thead>
             <tbody>{requests.map((r) => <tr key={r.id}><td>{new Date(r.at).toLocaleDateString()}</td><td>{userById(db, r.targetId)?.name}</td><td>{db.periods.find((p) => p.id === r.periodId)?.name}</td><td>{r.office}</td>
-              <td><button className="ghost" onClick={() => { setPid(r.periodId); setTid(r.targetId); }}>Open</button></td></tr>)}</tbody></table>
+              <td><button className="ghost" onClick={() => { setPid(r.periodId); const match = computeAll(db, r.periodId).find((x) => x.targetId === r.targetId); if (match) setResultKey(keyOfResult(match)); }}>Open</button></td></tr>)}</tbody></table>
         </Card>
       )}
-      <Card title={`Department summary · ${deptName(db, user.dept)}`} actions={<><PeriodPicker periods={periods} value={pid} onChange={(v) => { setPid(v); setTid(''); }} /><PrintButton /></>}>
+      <Card title={`Department summary · ${deptName(db, user.dept)}`} actions={<><PeriodPicker periods={periods} value={pid} onChange={(v) => { setPid(v); setResultKey(''); }} /><PrintButton /></>}>
         <DeptSummary db={db} periodId={pid} dept={user.dept} />
       </Card>
       <Card title="Individual results in your department">
         <table>
           <thead><tr><th>Name</th><th>Type</th><th>Final score</th><th>Status</th></tr></thead>
           <tbody>{people.map((r) => (
-            <tr key={r.targetId}><td><button className="link" onClick={() => setTid(r.targetId)}>{r.target.name}</button></td><td>{TARGET_TYPES[r.type]}</td>
+            <tr key={keyOfResult(r)}><td><button className="link" onClick={() => setResultKey(keyOfResult(r))}>{r.target.name}</button></td><td>{evaluateeRoleName(db, r.type)}</td>
               <td><div className="meter-row"><Meter value={r.final == null ? 0 : r.final / 4} tone="brand" /><b>{fmt(r.final)}</b></div></td><td>{STATUS_TEXT[r.status]}</td></tr>
           ))}</tbody>
         </table>
-        {selected && people.some((r) => r.targetId === selected) && <ResultCard res={computeTarget(db, pid, selected)} db={db} periodId={pid} />}
+        {selectedResult && <ResultCard res={computeTarget(db, pid, selected, { targetType: selectedResult.type })} db={db} periodId={pid} />}
       </Card>
     </>
   );

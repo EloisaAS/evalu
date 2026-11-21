@@ -366,6 +366,60 @@ try {
       duplicateRejected,
     };
   });
+  let customEvaluateeId = '';
+  let multiRoleUserId = '';
+  await tc('TC-63', 'Dynamic evaluator and evaluatee roles', 'One person receives two evaluatee roles and assignments remain category-specific', { roles: 2, taskTypes: 2, computeTypes: 2 }, async () => {
+    const role = await act(hr, 'addEvaluateeRole', { name: 'Validation Department Head', evaluatorGroupIds: ['DEAN'] });
+    if (role.status !== 200) return { roleError: role.data.error };
+    customEvaluateeId = role.data.result.id;
+    const created = await act(hr, 'createUser', {
+      name: 'Validation Multi-role Person', username: 'validation_multi_role', email: 'validation.multi.role@ubaguio.edu',
+      role: 'TP', position: 'faculty', dept: 'A', evaluatorGroupIds: ['DEAN'], evaluateeTypeIds: ['COLLEGE_FACULTY', customEvaluateeId],
+    });
+    if (created.status !== 200) return { userError: created.data.error };
+    multiRoleUserId = created.data.result.id;
+    const form = await act(hr, 'createForm', { targetType: customEvaluateeId, group: 'DEAN' });
+    if (form.status !== 200) return { formError: form.data.error };
+    const addDefault = await act(hr, 'addAssignment', { periodId: 'p4', evaluatorId: 'dean_a', targetId: multiRoleUserId, targetType: 'COLLEGE_FACULTY' });
+    const addCustom = await act(hr, 'addAssignment', { periodId: 'p4', evaluatorId: 'dean_a', targetId: multiRoleUserId, targetType: customEvaluateeId });
+    if (addDefault.status !== 200 || addCustom.status !== 200) return { assignmentError: addDefault.data.error || addCustom.data.error };
+    const d = (await call('/api/data', { cookie: hr })).data;
+    const tasks = d.tasks.filter((t) => t.targetId === multiRoleUserId);
+    const computed = L.computeAll(d, 'p4').filter((r) => r.targetId === multiRoleUserId);
+    return {
+      roles: d.users.find((u) => u.id === multiRoleUserId).evaluateeTypeIds.length,
+      taskTypes: new Set(tasks.map((t) => t.targetType)).size,
+      computeTypes: new Set(computed.map((r) => r.type)).size,
+    };
+  });
+  await tc('TC-64', 'Predefined access profiles', 'Custom access role labels map to a fixed server permission profile; student access cannot create roles', { templateRole: 'NTP', customLabel: true, studentDenied: 403, studentTemplateDenied: 400 }, async () => {
+    const profile = await act(hr, 'addAccessRole', { name: 'Validation Office Evaluator', template: 'NTP' });
+    if (profile.status !== 200) return { profileError: profile.data.error };
+    const created = await act(hr, 'createUser', {
+      name: 'Validation Profile User', username: 'validation_profile_user', email: 'validation.profile.user@ubaguio.edu',
+      accessRoleId: profile.data.result.id, position: 'staff', dept: 'A', evaluatorGroupIds: ['NTPSTAFF'], evaluateeTypeIds: [],
+    });
+    if (created.status !== 200) return { createError: created.data.error };
+    const d = (await call('/api/data', { cookie: hr })).data;
+    return {
+      templateRole: d.users.find((u) => u.id === created.data.result.id).role,
+      customLabel: d.accessRoles.some((r) => r.id === profile.data.result.id && r.name === 'Validation Office Evaluator' && r.template === 'NTP'),
+      studentDenied: (await act(student, 'addAccessRole', { name: 'Unauthorized Profile', template: 'TP' })).status,
+      studentTemplateDenied: (await act(hr, 'addAccessRole', { name: 'Invalid Student Profile', template: 'ST' })).status,
+    };
+  });
+  await tc('TC-65', 'Role archival and history', 'Deleting roles with assignments archives them without removing account or task references', { evalRoleArchived: true, accountReferenceKept: true, taskReferenceKept: true, accessRoleArchived: true }, async () => {
+    const evalRole = await act(hr, 'deleteEvaluateeRole', { roleId: customEvaluateeId });
+    const accessRole = (await call('/api/data', { cookie: hr })).data.accessRoles.find((r) => r.name === 'Validation Office Evaluator');
+    const delAccess = await act(hr, 'deleteAccessRole', { roleId: accessRole.id });
+    const d = (await call('/api/data', { cookie: hr })).data;
+    return {
+      evalRoleArchived: evalRole.status === 200 && d.evaluateeRoles.some((r) => r.id === customEvaluateeId && r.active === false),
+      accountReferenceKept: d.users.some((u) => u.id === multiRoleUserId && u.evaluateeTypeIds.includes(customEvaluateeId)),
+      taskReferenceKept: d.tasks.some((t) => t.targetId === multiRoleUserId && t.targetType === customEvaluateeId),
+      accessRoleArchived: delAccess.status === 200 && d.accessRoles.some((r) => r.id === accessRole.id && r.active === false),
+    };
+  });
 } finally {
   server.close();
 }

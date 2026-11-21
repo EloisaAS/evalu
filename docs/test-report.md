@@ -1,8 +1,8 @@
 # evalU validation test report
 
-Run: 2026-11-21T08:31:42.334Z · Node v26.13.1 · code version 0c2d0bb · fresh test database with the sample data
+Run: 2026-11-21T08:59:46.195Z · Node v26.13.1 · code version 91d9792 · fresh test database with the sample data
 
-**Result: 62 of 62 test cases passed.**
+**Result: 65 of 65 test cases passed.**
 
 Each case runs automatically (`npm run test:validation`). "Actual" is measured during this run, not written by hand.
 Part A checks the computation rules on controlled data; Part B runs the real server, database and access control;
@@ -72,5 +72,8 @@ Part C checks the formula engine and its approval and versions; Part D the comme
 | TC-60 | HR-configurable evaluator groups | HR adds a Department Head group and assigns it to a staff account; the catalog and membership persist | {"group":true,"membership":true} | {"group":true,"membership":true} | PASS |
 | TC-61 | Evaluator group access control | A student cannot add an evaluator group; HR cannot apply a group to an unknown category | {"student":403,"invalidCategory":400} | {"student":403,"invalidCategory":400} | PASS |
 | TC-62 | Versioned computation modules | A new algorithm version can be registered without changing the prior version used by saved formulas | {"old":3.5,"new":4,"oldAgain":3.5,"duplicateRejected":true} | {"old":3.5,"new":4,"oldAgain":3.5,"duplicateRejected":true} | PASS |
+| TC-63 | Dynamic evaluator and evaluatee roles | One person receives two evaluatee roles and assignments remain category-specific | {"roles":2,"taskTypes":2,"computeTypes":2} | {"roles":2,"taskTypes":2,"computeTypes":2} | PASS |
+| TC-64 | Predefined access profiles | Custom access role labels map to a fixed server permission profile; student access cannot create roles | {"templateRole":"NTP","customLabel":true,"studentDenied":403,"studentTemplateDenied":400} | {"templateRole":"NTP","customLabel":true,"studentDenied":403,"studentTemplateDenied":400} | PASS |
+| TC-65 | Role archival and history | Deleting roles with assignments archives them without removing account or task references | {"evalRoleArchived":true,"accountReferenceKept":true,"taskReferenceKept":true,"accessRoleArchived":true} | {"evalRoleArchived":true,"accountReferenceKept":true,"taskReferenceKept":true,"accessRoleArchived":true} | PASS |
 
 Limits of this report: these are developer-run functional, security and integration tests on simulated data. They do not replace the stakeholder evaluation (ISO/IEC 25010 questionnaire) or confirmation of the rules by HRMC.

@@ -3,7 +3,7 @@
 // FR numbers refer to Table 8 of the manuscript.
 import { randomInt } from 'node:crypto';
 import {
-  GROUPS, TARGET_TYPES, STAGES, ROLES, POSITIONS, needsDept, uid, userById, periodById, targetType, evaluatorGroups, defaultEvaluatorGroups, groupName,
+  GROUPS, STAGES, ROLES, POSITIONS, DEFAULT_EVALUATEE_ROLES, DEFAULT_ACCESS_ROLES, needsDept, uid, userById, periodById, targetType, targetTypesOf, evaluatorGroups, defaultEvaluatorGroups, groupName, evaluateeRoleName,
   instrumentFor, formForTask, formUsed, effectiveWeights, generateTasks, runThresholdCheck, participationAlerts, sendReminders,
   isInstitutionalEmail, INSTITUTION_DOMAIN, notify, directors, pendingApprovals, resultHeads, hrUsers, isEvaluatee, isTeacher, isNursingDept, stageAtLeast, UB_DEPARTMENTS, missingUbDepartments, MAX_RATING, CLASS_TYPES,
   currentPolicy, formulaKey, activeFormula, formulaSnapshot, formGroups, validateFormula, computeAll, storeResults, methodOf, METHODS, AGGREGATIONS, MISSING_RULES, ROUNDING_METHODS,
@@ -64,7 +64,8 @@ function cleanComment(comment) {
 
 // ---------- accounts ----------
 const USERNAME = /^[a-z0-9._-]{3,32}$/;
-function accountFields(db, { name, username, email, role, position, dept, evaluatorGroupIds }, editingId = null) {
+function accountFields(db, { name, username, email, role, accessRoleId, position, dept, evaluatorGroupIds, evaluateeTypeIds }, editingId = null) {
+  const previous = editingId && userById(db, editingId);
   const u = { name: text(name, 'Full name', 100) };
   u.username = typeof username === 'string' ? username.trim().toLowerCase() : '';
   if (!USERNAME.test(u.username)) fail('Username must be 3–32 characters: lowercase letters, numbers, dots, dashes or underscores.');
@@ -72,17 +73,27 @@ function accountFields(db, { name, username, email, role, position, dept, evalua
   u.email = typeof email === 'string' ? email.trim().toLowerCase() : '';
   if (!isInstitutionalEmail(u.email)) fail(`Enter the person's official UB email (ending in @${INSTITUTION_DOMAIN}). Other email addresses are not accepted.`);
   if (db.users.some((x) => x.id !== editingId && x.email?.toLowerCase() === u.email)) fail('That email already belongs to another account.', 409);
-  if (!Object.hasOwn(ROLES, role)) fail('Choose a role.');
-  if (!Object.hasOwn(POSITIONS[role], position)) fail('Choose a position for this role.');
-  u.role = role; u.position = position;
-  u.dept = needsDept(role) ? find(db.departments, dept, 'Department').id : null;
+  const profile = accessRoleId && (db.accessRoles || []).find((r) => r.id === accessRoleId && (r.active !== false || previous?.accessRoleId === r.id));
+  if (accessRoleId && !profile) fail('Choose an active access role.');
+  const template = profile?.template || role;
+  if (!Object.hasOwn(ROLES, template)) fail('Choose a role.');
+  if (!Object.hasOwn(POSITIONS[template], position)) fail('Choose a position for this role.');
+  u.role = template; u.accessRoleId = profile?.id || (db.accessRoles || []).find((r) => r.template === template && r.builtIn)?.id || template; u.position = position;
+  u.dept = needsDept(template) ? find(db.departments, dept, 'Department').id : null;
   if (position === 'ci' && !isNursingDept(db.departments.find((d) => d.id === u.dept))) fail('Clinical Instructors belong to the School of Nursing. Choose the School of Nursing as the department.');
-  if (role === 'TP' || role === 'NTP') {
-    const assigned = Array.isArray(evaluatorGroupIds) ? evaluatorGroupIds : defaultEvaluatorGroups(role, position);
-    const active = new Set((db.evaluatorGroups || []).filter((g) => g.active !== false).map((g) => g.id));
-    if (assigned.some((id) => !active.has(id))) fail('Choose only active evaluator groups.');
+  if (template !== 'ST') {
+    const assigned = Array.isArray(evaluatorGroupIds) ? evaluatorGroupIds : defaultEvaluatorGroups(template, position);
+    const groups = new Map((db.evaluatorGroups || []).map((g) => [g.id, g]));
+    if (assigned.some((id) => !groups.has(id) || (groups.get(id).active === false && !previous?.evaluatorGroupIds?.includes(id)))) fail('Choose only active evaluator groups.');
     u.evaluatorGroupIds = [...new Set(assigned)];
   } else u.evaluatorGroupIds = [];
+  if (template !== 'ST') {
+    const currentTypes = previous ? targetTypesOf(db, previous) : [];
+    const assigned = Array.isArray(evaluateeTypeIds) ? evaluateeTypeIds : [targetType(db, u)].filter(Boolean);
+    const types = new Map([...(db.evaluateeRoles || DEFAULT_EVALUATEE_ROLES)].map((r) => [r.id, r]));
+    if (assigned.some((id) => !types.has(id) || (types.get(id).active === false && !currentTypes.includes(id)))) fail('Choose only active evaluatee roles.');
+    u.evaluateeTypeIds = [...new Set(assigned)];
+  } else u.evaluateeTypeIds = [];
   return u;
 }
 /** Put a student in exactly these class sections (only sections of their department). */
@@ -297,7 +308,8 @@ export const actions = {
       const label = text(name, 'Evaluator group name', 80);
       if (!Array.isArray(targetTypes) || !targetTypes.length) fail('Choose at least one evaluated category for this group.');
       const targets = [...new Set(targetTypes)];
-      if (targets.some((tt) => !Object.hasOwn(TARGET_TYPES, tt))) fail('Choose valid evaluated categories.');
+      const allowedTypes = new Set((db.evaluateeRoles || DEFAULT_EVALUATEE_ROLES).filter((r) => r.active !== false).map((r) => r.id));
+      if (targets.some((tt) => !allowedTypes.has(tt))) fail('Choose valid evaluated categories.');
       const id = label.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 30).replace(/_+$/g, '');
       if (!/^[A-Z][A-Z0-9_]{1,29}$/.test(id)) fail('The group name must produce an ID with at least two letters or numbers.');
       if (db.evaluatorGroups.some((g) => g.id === id || g.name.toLowerCase() === label.toLowerCase())) fail('An evaluator group with that ID or name already exists.', 409);
@@ -307,6 +319,122 @@ export const actions = {
         db.rules[tt][id] = null;
       }
       return { id, name: label, targetTypes: targets };
+    },
+  },
+  updateEvaluatorGroup: {
+    roles: HR,
+    run(db, { groupId, name, active }) {
+      const group = find(db.evaluatorGroups || [], groupId, 'Evaluator role');
+      if (group.id === 'ST') fail('The student evaluator role is fixed.');
+      if (name != null) {
+        const label = text(name, 'Evaluator role name', 80);
+        if (db.evaluatorGroups.some((g) => g.id !== group.id && g.name.toLowerCase() === label.toLowerCase())) fail('An evaluator role with that name already exists.', 409);
+        group.name = label;
+      }
+      if (active != null) group.active = active === true;
+    },
+  },
+  deleteEvaluatorGroup: {
+    roles: HR,
+    run(db, { groupId }) {
+      const group = find(db.evaluatorGroups || [], groupId, 'Evaluator role');
+      if (group.id === 'ST') fail('The student evaluator role is fixed.');
+      const referenced = db.users.some((u) => u.evaluatorGroupIds?.includes(group.id))
+        || db.instruments.some((i) => i.group === group.id)
+        || db.tasks.some((t) => t.group === group.id)
+        || (db.formulas || []).some((f) => f.config.components?.some((c) => c.group === group.id))
+        || Object.values(db.rules).some((r) => Object.hasOwn(r, group.id))
+        || db.periods.some((p) => Object.values(p.rules || {}).some((r) => Object.hasOwn(r, group.id)));
+      if (referenced || group.builtIn) group.active = false;
+      else {
+        db.evaluatorGroups = db.evaluatorGroups.filter((g) => g.id !== group.id);
+        for (const rules of Object.values(db.rules)) delete rules[group.id];
+      }
+      return { archived: referenced };
+    },
+  },
+  addEvaluateeRole: {
+    roles: HR,
+    run(db, { name, evaluatorGroupIds }) {
+      db.evaluateeRoles ||= DEFAULT_EVALUATEE_ROLES.map((r) => ({ ...r }));
+      const label = text(name, 'Evaluatee role name', 80);
+      if (!Array.isArray(evaluatorGroupIds) || !evaluatorGroupIds.length) fail('Choose at least one evaluator role for this category.');
+      const groups = [...new Set(evaluatorGroupIds)];
+      const activeGroups = new Set((db.evaluatorGroups || []).filter((g) => g.active !== false).map((g) => g.id));
+      if (groups.some((id) => !activeGroups.has(id))) fail('Choose only active evaluator roles.');
+      const id = label.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 30).replace(/_+$/g, '');
+      if (!/^[A-Z][A-Z0-9_]{1,29}$/.test(id)) fail('The role name must produce an ID with at least two letters or numbers.');
+      if (db.evaluateeRoles.some((r) => r.id === id || r.name.toLowerCase() === label.toLowerCase())) fail('An evaluatee role with that ID or name already exists.', 409);
+      db.evaluateeRoles.push({ id, name: label, builtIn: false, active: true });
+      db.rules[id] = Object.fromEntries(groups.map((g) => [g, null]));
+      return { id, name: label, evaluatorGroupIds: groups };
+    },
+  },
+  updateEvaluateeRole: {
+    roles: HR,
+    run(db, { roleId, name, active }) {
+      const role = find(db.evaluateeRoles || [], roleId, 'Evaluatee role');
+      if (role.id === 'COLLEGE_FACULTY') fail('The College Faculty evaluatee role is fixed.');
+      if (name != null) {
+        const label = text(name, 'Evaluatee role name', 80);
+        if (db.evaluateeRoles.some((r) => r.id !== role.id && r.name.toLowerCase() === label.toLowerCase())) fail('An evaluatee role with that name already exists.', 409);
+        role.name = label;
+      }
+      if (active != null) role.active = active === true;
+    },
+  },
+  deleteEvaluateeRole: {
+    roles: HR,
+    run(db, { roleId }) {
+      const role = find(db.evaluateeRoles || [], roleId, 'Evaluatee role');
+      if (role.id === 'COLLEGE_FACULTY') fail('The College Faculty evaluatee role is fixed.');
+      const referenced = db.users.some((u) => u.evaluateeTypeIds?.includes(role.id))
+        || db.instruments.some((i) => i.targetType === role.id)
+        || db.tasks.some((t) => t.targetType === role.id)
+        || (db.formulas || []).some((f) => f.targetType === role.id)
+        || (db.results || []).some((r) => r.targetType === role.id)
+        || db.periods.some((p) => p.formulas && Object.hasOwn(p.formulas, role.id));
+      if (referenced || role.builtIn) role.active = false;
+      else {
+        db.evaluateeRoles = db.evaluateeRoles.filter((r) => r.id !== role.id);
+        delete db.rules[role.id];
+        for (const p of db.periods) if (p.rules) delete p.rules[role.id];
+      }
+      return { archived: referenced };
+    },
+  },
+  addAccessRole: {
+    roles: HR,
+    run(db, { name, template }) {
+      db.accessRoles ||= DEFAULT_ACCESS_ROLES.map((r) => ({ ...r }));
+      const label = text(name, 'Access role name', 80);
+      if (!Object.hasOwn(ROLES, template) || template === 'ST') fail('Choose a supported non-student access profile.');
+      if (db.accessRoles.some((r) => r.name.toLowerCase() === label.toLowerCase())) fail('An access role with that name already exists.', 409);
+      const id = `CUSTOM_${label.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 24)}`;
+      if (!/^CUSTOM_[A-Z0-9_]{2,24}$/.test(id) || db.accessRoles.some((r) => r.id === id)) fail('Choose a different access role name.');
+      db.accessRoles.push({ id, name: label, template, builtIn: false, active: true });
+      return { id, name: label, template };
+    },
+  },
+  updateAccessRole: {
+    roles: HR,
+    run(db, { roleId, name }) {
+      const role = find(db.accessRoles || [], roleId, 'Access role');
+      if (role.builtIn) fail('Built-in access profiles cannot be renamed.');
+      const label = text(name, 'Access role name', 80);
+      if (db.accessRoles.some((r) => r.id !== role.id && r.name.toLowerCase() === label.toLowerCase())) fail('An access role with that name already exists.', 409);
+      role.name = label;
+    },
+  },
+  deleteAccessRole: {
+    roles: HR,
+    run(db, { roleId }) {
+      const role = find(db.accessRoles || [], roleId, 'Access role');
+      if (role.builtIn) fail('Built-in access profiles cannot be removed.');
+      const referenced = db.users.some((u) => u.accessRoleId === role.id);
+      if (referenced) role.active = false;
+      else db.accessRoles = db.accessRoles.filter((r) => r.id !== role.id);
+      return { archived: referenced };
     },
   },
   setUserActive: {
@@ -483,7 +611,7 @@ export const actions = {
       const expired = (db.formulas || []).filter((f) => f.status === 'active' && !formulaEffectiveOn(f, startDate));
       for (const f of expired) {
         if (!db.formulas.some((candidate) => candidate.key === f.key && formulaEffectiveOn(candidate, startDate) && candidate.status === 'active')) {
-          fail(`No formula version for ${TARGET_TYPES[f.targetType]} is effective on ${startDate}. Set an effective period or schedule an approved replacement first.`, 409);
+          fail(`No formula version for ${evaluateeRoleName(db, f.targetType)} is effective on ${startDate}. Set an effective period or schedule an approved replacement first.`, 409);
         }
       }
       const p = {
@@ -631,20 +759,22 @@ export const actions = {
   },
   addAssignment: {
     roles: HR,
-    run(db, { periodId, evaluatorId, targetId }) {
+    run(db, { periodId, evaluatorId, targetId, targetType: requestedType }) {
       const p = period(db, periodId);
       const ev = userById(db, evaluatorId), tg = userById(db, targetId);
       if (!ev || !tg) fail('Choose an evaluator and a person to evaluate.');
       if (ev.id === tg.id) fail('A person cannot evaluate themselves.');
-      const tt = targetType(db, tg);
-      if (!tt) fail(`${tg.name} is not evaluated in this system.`);
+      const targetRoles = targetTypesOf(db, tg);
+      if (!targetRoles.length) fail(`${tg.name} is not evaluated in this system.`);
+      const tt = requestedType || (targetRoles.length === 1 ? targetRoles[0] : null);
+      if (!tt || !targetRoles.includes(tt)) fail('Choose which of this person’s evaluatee roles this task is for.');
       const groups = evaluatorGroups(ev);
       if (groups.includes('ST')) fail('Students are assigned through their class sections.');
       const rule = p.rules?.[tt] || db.rules[tt] || {};
-      const group = groups.find((g) => g in rule) || fail(`${ev.name} is not in an evaluator group for ${TARGET_TYPES[tt]}.`);
+      const group = groups.find((g) => g in rule) || fail(`${ev.name} is not in an evaluator group for ${evaluateeRoleName(db, tt)}.`);
       if (!instrumentFor(db, tt, group, tg.dept)) fail('No form exists for this pairing. Create it under Forms first.');
-      if (db.tasks.some((t) => t.periodId === p.id && t.evaluatorId === ev.id && t.targetId === tg.id && t.group === group && !t.sectionId)) fail('That assignment already exists.', 409);
-      db.tasks.push({ id: uid('t'), periodId: p.id, evaluatorId: ev.id, targetId: tg.id, group, sectionId: null, draft: null, response: null });
+      if (db.tasks.some((t) => t.periodId === p.id && t.evaluatorId === ev.id && t.targetId === tg.id && (t.targetType || targetType(db, tg)) === tt && t.group === group && !t.sectionId)) fail('That assignment already exists.', 409);
+      db.tasks.push({ id: uid('t'), periodId: p.id, evaluatorId: ev.id, targetId: tg.id, targetType: tt, group, sectionId: null, draft: null, response: null });
     },
   },
   removeTask: {
@@ -752,7 +882,7 @@ export const actions = {
     run(db, { targetType: tt, group, weight }) {
       if (!(tt in db.rules) || !(group in db.rules[tt])) fail('Unknown evaluated role or evaluator group.');
       const af = activeFormula(db, tt);
-      if (af) fail(`${TARGET_TYPES[tt]} is computed with the formula "${af.config.name}" version ${af.version}. Change it under Rating formula (a new version needs approval).`, 409);
+      if (af) fail(`${evaluateeRoleName(db, tt)} is computed with the formula "${af.config.name}" version ${af.version}. Change it under Rating formula (a new version needs approval).`, 409);
       const w = weight === null || weight === '' ? null : number(weight, 'Weight', 0, 100);
       const from = db.rules[tt][group];
       db.rules[tt][group] = w;
@@ -781,7 +911,7 @@ export const actions = {
         logFormula(f, user, 'edited');
         return { id: f.id, version: f.version };
       }
-      if (!Object.hasOwn(TARGET_TYPES, tt)) fail('Choose who is evaluated.');
+      if (!(db.evaluateeRoles || DEFAULT_EVALUATEE_ROLES).some((r) => r.id === tt && r.active !== false)) fail('Choose who is evaluated.');
       const d = dept ? find(db.departments, dept, 'Department').id : null;
       const key = formulaKey(tt, d);
       if (db.formulas.some((f) => f.key === key && ['draft', 'pending', 'rejected', 'approved', 'scheduled'].includes(f.status))) fail('This category already has a version in progress. Finish or delete it first.', 409);
@@ -861,7 +991,7 @@ export const actions = {
       // so results already collected are never computed differently without notice
       let applied = 0, kept = 0;
       for (const p of db.periods.filter((x) => x.status === 'open')) {
-        const inCat = (t) => { const u = userById(db, t.targetId); return targetType(db, u) === f.targetType && (!f.dept || u?.dept === f.dept); };
+        const inCat = (t) => { const u = userById(db, t.targetId); return (t.targetType || targetType(db, u)) === f.targetType && (!f.dept || u?.dept === f.dept); };
         if (db.tasks.some((t) => t.periodId === p.id && t.response && inCat(t))) { kept++; continue; }
         if (!formulaEffectiveOn(f, p.startDate || new Date().toISOString().slice(0, 10))) { kept++; continue; }
         p.formulas = { ...(p.formulas || {}), [f.key]: snap };
@@ -1014,7 +1144,7 @@ export function describeAction(name, args, db, result) {
   if (name === 'changePassword') return 'Changed own password';
   // before → after values, so every rule change can be traced
   if (name === 'setPolicy' && result?.changed) return `policy version ${result.version}: ${result.changed.map((c) => `${c.field} ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`).join('; ')} · reason: ${args.reason}`;
-  if (/Formula/.test(name)) { const f = (db.formulas || []).find((x) => x.id === (args.id || result?.id)); const tag = f ? `formula: ${f.config.name} v${f.version} (${TARGET_TYPES[f.targetType]}${f.dept ? ', ' + f.dept : ''}) · algorithm: ${methodOf(f.config.method, f.config.methodVersion ?? 1)?.label || f.config.method} v${f.config.methodVersion ?? 1} · status: ${f.status}` : (result?.deleted ? `formula: ${result.deleted}` : 'formula'); return [tag, args.basis && `basis: ${args.basis}`, args.reason && `reason: ${args.reason}`, result?.applied != null && `applied to ${result.applied} open period(s), ${result.kept} kept the previous version`, result?.scheduled && 'starts with the next evaluation period'].filter(Boolean).join(' · '); }
+  if (/Formula/.test(name)) { const f = (db.formulas || []).find((x) => x.id === (args.id || result?.id)); const tag = f ? `formula: ${f.config.name} v${f.version} (${evaluateeRoleName(db, f.targetType)}${f.dept ? ', ' + f.dept : ''}) · algorithm: ${methodOf(f.config.method, f.config.methodVersion ?? 1)?.label || f.config.method} v${f.config.methodVersion ?? 1} · status: ${f.status}` : (result?.deleted ? `formula: ${result.deleted}` : 'formula'); return [tag, args.basis && `basis: ${args.basis}`, args.reason && `reason: ${args.reason}`, result?.applied != null && `applied to ${result.applied} open period(s), ${result.kept} kept the previous version`, result?.scheduled && 'starts with the next evaluation period'].filter(Boolean).join(' · '); }
   if (name === 'createPeriod' && result?.started?.length) return `name: ${args.name} · formula(s) started with this period: ${result.started.join(', ')}`;
   if (name === 'returnToHR') { const per = periodById(db, args.periodId); return `period: ${per?.name} · returned to HR · reason: ${args.reason}`; }
   const parts = [];
@@ -1022,8 +1152,8 @@ export function describeAction(name, args, db, result) {
   const p = a.periodId && periodById(db, a.periodId);
   if (p) parts.push(`period: ${p.name}`);
   for (const k of ['userId', 'targetId', 'evaluatorId']) { const u = a[k] && userById(db, a[k]); if (u) parts.push(`${k.replace('Id', '')}: ${u.name}`); }
-  if (a.instrumentId) { const i = db.instruments.find((x) => x.id === a.instrumentId); if (i) parts.push(`form: ${TARGET_TYPES[i.targetType]} ← ${groupName(db, i.group)} v${i.version || 1}`); }
-  if (a.targetType && a.group) parts.push(`${TARGET_TYPES[a.targetType] || a.targetType} ← ${groupName(db, a.group)}`);
+  if (a.instrumentId) { const i = db.instruments.find((x) => x.id === a.instrumentId); if (i) parts.push(`form: ${evaluateeRoleName(db, i.targetType)} ← ${groupName(db, i.group)} v${i.version || 1}`); }
+  if (a.targetType && a.group) parts.push(`${evaluateeRoleName(db, a.targetType)} ← ${groupName(db, a.group)}`);
   if ('weight' in a) parts.push(result && 'from' in result ? `weight: ${result.from ?? 'blank'} → ${result.to ?? 'blank'}` : `weight: ${a.weight ?? 'blank'}`);
   if (a.taskId) { const t = db.tasks.find((x) => x.id === a.taskId); const tg = t && userById(db, t.targetId); if (tg) parts.push(`evaluation of ${tg.name}`); }
   if (a.office) parts.push(`requested by: ${a.office}`);

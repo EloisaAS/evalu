@@ -121,6 +121,8 @@ export const POSITIONS = {
   HR: { hr: 'HR Specialist', assistant: 'HRMC Assistant' },
   DIR: { vp: 'Vice President' },
 };
+export const DEFAULT_ACCESS_ROLES = Object.entries(ROLES).map(([id, name]) => ({ id, name, template: id, builtIn: true, active: true }));
+export const accessRoleName = (db, id) => db?.accessRoles?.find((r) => r.id === id)?.name || ROLES[id] || id;
 /** Roles that belong to a department. */
 export const needsDept = (role) => role === 'ST' || role === 'TP' || role === 'NTP';
 /** Clinical Instructors are only in the School of Nursing (their students are Nursing students). */
@@ -152,6 +154,10 @@ export const TARGET_TYPES = {
   NTP_STAFF: 'Non-teaching staff',
   NTP_HEAD: 'Non-teaching office head',
 };
+export const DEFAULT_EVALUATEE_ROLES = Object.entries(TARGET_TYPES).map(([id, name]) => ({ id, name, builtIn: true, active: true }));
+export const evaluateeRoles = (db) => db?.evaluateeRoles || DEFAULT_EVALUATEE_ROLES;
+export const evaluateeRoleName = (db, id) => evaluateeRoles(db).find((r) => r.id === id)?.name || TARGET_TYPES[id] || id;
+export const evaluatorRoleName = groupName;
 
 export const STAGES = ['hr', 'dir', 'faculty'];
 export const STAGE_LABEL = {
@@ -181,6 +187,7 @@ export const evaluatorGroup = (u) => evaluatorGroups(u)[0] || null;
 
 export function targetType(db, u) {
   if (!u) return null;
+  if (Array.isArray(u.evaluateeTypeIds)) return u.evaluateeTypeIds[0] || null;
   if (u.role === 'TP') {
     if (u.position === 'dean') return 'DEAN';
     if (u.position === 'ci') return 'CI';
@@ -193,8 +200,15 @@ export function targetType(db, u) {
   if (u.role === 'NTP') return u.position === 'head' ? 'NTP_HEAD' : 'NTP_STAFF';
   return null;
 }
+/** All evaluation categories assigned to a person; legacy accounts retain their original category. */
+export function targetTypesOf(db, u) {
+  if (!u || u.role === 'ST') return [];
+  return Array.isArray(u.evaluateeTypeIds) ? [...new Set(u.evaluateeTypeIds)] : [targetType(db, u)].filter(Boolean);
+}
 /** People who get evaluation results of their own (faculty, Clinical Instructors, deans, non-teaching personnel). */
-export const isEvaluatee = (u) => (u.role === 'TP' && ['faculty', 'ci', 'dean'].includes(u.position)) || u.role === 'NTP';
+export const isEvaluatee = (u) => Array.isArray(u?.evaluateeTypeIds)
+  ? u.evaluateeTypeIds.length > 0
+  : (u?.role === 'TP' && ['faculty', 'ci', 'dean'].includes(u.position)) || u?.role === 'NTP';
 
 export const userById = (db, id) => db.users.find((u) => u.id === id);
 export const deptName = (db, id) => db.departments.find((d) => d.id === id)?.name || id;
@@ -239,7 +253,7 @@ export function taskVariant(db, task) {
 /** The form a not-yet-submitted task is answered on. */
 export function formForTask(db, task) {
   const tg = userById(db, task.targetId);
-  return tg ? instrumentFor(db, targetType(db, tg), task.group, tg.dept, taskVariant(db, task)) : null;
+  return tg ? instrumentFor(db, task.targetType || targetType(db, tg), task.group, tg.dept, taskVariant(db, task)) : null;
 }
 /** The form a task was (or will be) answered on: the version stored with a submitted response. */
 export const formOfTask = (db, task) =>
@@ -288,16 +302,17 @@ const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
 /** FR13: final ratings are rounded to two decimal places. */
 export const round2 = (x) => (x == null ? null : Math.round((x + Number.EPSILON) * 100) / 100);
 
-export function sectionStats(db, periodId, sectionId, participation = null) {
+export function sectionStats(db, periodId, sectionId, participation = null, targetRole = null) {
   const sec = db.sections.find((s) => s.id === sectionId);
-  const tasks = db.tasks.filter((t) => t.periodId === periodId && t.sectionId === sectionId && t.group === 'ST');
+  const tasks = db.tasks.filter((t) => t.periodId === periodId && t.sectionId === sectionId && t.group === 'ST'
+    && (!targetRole || (t.targetType || targetType(db, userById(db, t.targetId))) === targetRole));
   const required = tasks.length;
   const done = tasks.filter((t) => t.response);
   const needed = neededResponses(required, { ...policyFor(db, periodId), ...(participation || {}) });
   const rate = required ? done.length / required : 0;
   const valid = required > 0 && done.length >= needed;
   const score = valid ? mean(done.map((t) => responseScore(t.response))) : null;
-  return { section: sec, required, responded: done.length, needed, rate, valid, score, belowHalf: required > 0 && !valid };
+  return { section: sec, required, responded: done.length, needed, rate, valid, score, belowHalf: required > 0 && !valid, ...(targetRole && { targetRole }) };
 }
 
 /** NFR8: group weights in force for a period (fixed when the period is closed). */
@@ -325,6 +340,21 @@ export function formulaFor(db, periodId, tt, dept) {
   if (!p) { const a = activeFormula(db, tt, dept); if (a) return formulaSnapshot(a); }
   return defaultFormula(rulesFor(db, periodId)[tt] || {}, policyFor(db, periodId));
 }
+/** Participation statistics for every evaluatee category that has student tasks in this section. */
+export function sectionStatsByRole(db, periodId, sectionId) {
+  const section = db.sections.find((s) => s.id === sectionId);
+  const target = section && userById(db, section.facultyId);
+  const roles = [...new Set(db.tasks.filter((t) => t.periodId === periodId && t.sectionId === sectionId && t.group === 'ST')
+    .map((t) => t.targetType || targetType(db, target)).filter(Boolean))];
+  return roles.map((tt) => {
+    const formula = formulaFor(db, periodId, tt, target?.dept);
+    const participation = {
+      participationPercent: formula.participation?.percent ?? policyFor(db, periodId).participationPercent,
+      participationPlusOne: formula.participation?.plusOne ?? policyFor(db, periodId).participationPlusOne,
+    };
+    return sectionStats(db, periodId, sectionId, participation, tt);
+  });
+}
 /** Evaluation groups that have a form for a category (only those can be put in its formula). */
 export const formGroups = (db, tt) => [...new Set(db.instruments.filter((i) => i.active !== false && i.targetType === tt).map((i) => i.group))];
 const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
@@ -335,7 +365,7 @@ const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y)
  */
 export function computeTarget(db, periodId, targetId, opts = {}) {
   const target = userById(db, targetId);
-  const tt = targetType(db, target);
+  const tt = opts.targetType || targetType(db, target);
   const f = opts.formula || formulaFor(db, periodId, tt, target?.dept);
   const comps = f.components || [];
   const groups = {};
@@ -349,10 +379,11 @@ export function computeTarget(db, periodId, targetId, opts = {}) {
   const shown = (c) => (m?.usesWeights ? c.weight : m?.equalShares ? +(100 / comps.length).toFixed(2) : null);
   for (const c of comps) {
     const g = c.group;
-    const tasks = db.tasks.filter((t) => t.periodId === periodId && t.targetId === targetId && t.group === g);
+    const tasks = db.tasks.filter((t) => t.periodId === periodId && t.targetId === targetId && t.group === g
+      && (t.targetType || targetType(db, target)) === tt);
     if (g === 'ST') {
       const secIds = [...new Set(tasks.map((t) => t.sectionId))];
-      const st = secIds.map((id) => sectionStats(db, periodId, id, participation));
+      const st = secIds.map((id) => sectionStats(db, periodId, id, participation, tt));
       sections.push(...st);
       const valid = st.filter((x) => x.valid);
       // aggregation: average of each class's average (UB practice), or all counted students together
@@ -380,11 +411,11 @@ export function computeTarget(db, periodId, targetId, opts = {}) {
 export const hasFinal = (r) => r.final != null;
 
 export function targetsOf(db) {
-  return db.users.filter((u) => targetType(db, u));
+  return db.users.filter((u) => targetTypesOf(db, u).length);
 }
 
 export function computeAll(db, periodId) {
-  return targetsOf(db).map((u) => computeTarget(db, periodId, u.id));
+  return targetsOf(db).flatMap((u) => targetTypesOf(db, u).map((tt) => computeTarget(db, periodId, u.id, { targetType: tt })));
 }
 
 /**
@@ -397,7 +428,7 @@ export function storeResults(db, p) {
   db.results = (db.results || []).filter((r) => r.periodId !== p.id);
   for (const r of computeAll(db, p.id)) {
     const rec = r.formula.id && (db.formulas || []).find((f) => f.id === r.formula.id);
-    db.results.push({ periodId: p.id, targetId: r.targetId, data: {
+    db.results.push({ periodId: p.id, targetId: r.targetId, targetType: r.type, data: {
       final: r.final, status: r.status, basis: r.basis, steps: r.steps, how: r.how,
       // the formula version with its parameters, and its approval (the starting formula has none)
       formula: { ...r.formula, approvedBy: rec?.meta.approvedBy || null, approvedAt: rec?.meta.approvedAt || null, basis: rec?.meta.basis || null },
@@ -433,16 +464,17 @@ export function expectedAssignments(db, periodId) {
   // Deactivated accounts get no new tasks (their past results stay in the reports).
   const p = periodById(db, periodId);
   const out = [];
+  const activeEvaluateeRoles = new Set(evaluateeRoles(db).filter((r) => r.active !== false).map((r) => r.id));
+  const activeEvaluatorGroups = new Set((db.evaluatorGroups || DEFAULT_EVALUATOR_GROUPS).filter((g) => g.active !== false).map((g) => g.id));
   for (const t of targetsOf(db).filter(active)) {
     if (!periodCovers(p, t.dept)) continue;
-    const tt = targetType(db, t);
-    for (const g of Object.keys(rulesFor(db, periodId)[tt] || {})) {
+    for (const tt of targetTypesOf(db, t).filter((id) => activeEvaluateeRoles.has(id))) for (const g of Object.keys(rulesFor(db, periodId)[tt] || {}).filter((id) => id === 'ST' || activeEvaluatorGroups.has(id))) {
       if (g === 'ST') {
         for (const sec of db.sections.filter((s) => s.facultyId === t.id && !isExemptSection(s)))
-          for (const sid of sec.studentIds.filter((id) => active(userById(db, id)))) out.push({ evaluatorId: sid, targetId: t.id, group: g, sectionId: sec.id });
+          for (const sid of sec.studentIds.filter((id) => active(userById(db, id)))) out.push({ evaluatorId: sid, targetId: t.id, targetType: tt, group: g, sectionId: sec.id });
       } else {
         for (const e of db.users.filter((u) => active(u) && u.dept === t.dept && evaluatorGroups(u).includes(g) && u.id !== t.id))
-          out.push({ evaluatorId: e.id, targetId: t.id, group: g, sectionId: null });
+          out.push({ evaluatorId: e.id, targetId: t.id, targetType: tt, group: g, sectionId: null });
       }
     }
   }
@@ -451,10 +483,10 @@ export function expectedAssignments(db, periodId) {
 
 export function generateTasks(draft, periodId) {
   // idempotent; returns {added, skippedNoForm}
-  const have = new Set(draft.tasks.filter((t) => t.periodId === periodId).map((t) => `${t.evaluatorId}|${t.targetId}|${t.group}|${t.sectionId || ''}`));
+  const have = new Set(draft.tasks.filter((t) => t.periodId === periodId).map((t) => `${t.evaluatorId}|${t.targetId}|${t.targetType || targetType(draft, userById(draft, t.targetId))}|${t.group}|${t.sectionId || ''}`));
   let added = 0, skippedNoForm = 0;
   for (const a of expectedAssignments(draft, periodId)) {
-    const key = `${a.evaluatorId}|${a.targetId}|${a.group}|${a.sectionId || ''}`;
+    const key = `${a.evaluatorId}|${a.targetId}|${a.targetType}|${a.group}|${a.sectionId || ''}`;
     if (have.has(key)) continue;
     if (!formForTask(draft, a)) { skippedNoForm++; continue; }
     draft.tasks.push({ id: uid('t'), periodId, ...a, draft: null, response: null });
@@ -485,22 +517,14 @@ const fmtDate = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { m
 function participationNotices(draft, periodId, final) {
   const p = periodById(draft, periodId);
   const day = today();
-  const low = draft.sections.map((s) => {
-    const target = userById(draft, s.facultyId);
-    const formula = formulaFor(draft, periodId, targetType(draft, target), target?.dept);
-    const participation = {
-      participationPercent: formula.participation?.percent ?? policyFor(draft, periodId).participationPercent,
-      participationPlusOne: formula.participation?.plusOne ?? policyFor(draft, periodId).participationPlusOne,
-    };
-    return sectionStats(draft, periodId, s.id, participation);
-  }).filter((st) => st.required && !st.valid);
+  const low = draft.sections.flatMap((s) => sectionStatsByRole(draft, periodId, s.id)).filter((st) => st.required && !st.valid);
   const kind = final ? 'invalidated' : 'participation';
   const tag = final ? `thr|${periodId}` : `part|${periodId}|${day}`;
   const line = (st) => `${st.section.code} (${st.section.subject}) – ${userById(draft, st.section.facultyId)?.name}: ${st.responded} of ${st.required} answered, ${st.needed} needed`;
   for (const st of low) {
     const s = st.section;
     notify(draft, {
-      key: final ? `thr|${periodId}|${s.id}` : `${tag}|${s.id}`, userId: s.facultyId, kind,
+      key: final ? `thr|${periodId}|${s.id}|${st.targetRole || ''}` : `${tag}|${s.id}|${st.targetRole || ''}`, userId: s.facultyId, kind,
       text: final
         ? `Student evaluation for ${s.code} (${s.subject}) in ${p.name} is excluded from your result: only ${st.responded} of ${st.required} students answered, and at least ${st.needed} (half of the class plus one) were needed.`
         : `Only ${st.responded} of ${st.required} students in ${s.code} (${s.subject}) have answered the evaluation for ${p.name}. At least ${st.needed} (half of the class plus one) are needed by ${fmtDate(p.deadline)}, or this class won't count. Please remind your students.`,

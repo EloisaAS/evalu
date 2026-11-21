@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useApp } from '../lib/store';
-import { STAGES, taskStatus, sectionStats, userById, computeAll, canSeeAll, THRESHOLD, hasFinal, pendingApprovals, groupName } from '../lib/logic';
+import { STAGES, taskStatus, sectionStatsByRole, userById, computeAll, canSeeAll, THRESHOLD, hasFinal, pendingApprovals, groupName } from '../lib/logic';
 import { ApprovalPanel } from './Reports';
 import { Card, Stat, Stats, Meter, Badge, Empty, PeriodPicker, Icon, useNav, fmt, pct, dueText, daysUntil } from '../ui';
 
@@ -52,7 +52,7 @@ export function HROverview() {
   const status = tasks.map((t) => taskStatus(db, t));
   const done = status.filter((s) => s === 'completed').length;
   const overdue = status.filter((s) => s === 'overdue').length;
-  const classes = open.flatMap((p) => db.sections.map((s) => ({ p, st: sectionStats(db, p.id, s.id) }))).filter((x) => x.st.required);
+  const classes = open.flatMap((p) => db.sections.flatMap((s) => sectionStatsByRole(db, p.id, s.id).map((st) => ({ p, st })))).filter((x) => x.st.required);
   const low = classes.filter((x) => x.st.belowHalf).sort((a, b) => a.st.rate - b.st.rate);
   const active = db.users.filter((u) => u.active);
   const waiting = active.filter((u) => u.mustChangePassword).length;
@@ -139,7 +139,7 @@ export function VpOverview() {
   const complete = all.filter(hasFinal);
   const toApprove = periods.filter((p) => p.releaseStage === 'dir');
   const avg = (list) => (list.length ? list.reduce((a, r) => a + r.final, 0) / list.length : null);
-  const secs = db.sections.map((s) => sectionStats(db, pid, s.id)).filter((s) => s.required);
+  const secs = db.sections.flatMap((s) => sectionStatsByRole(db, pid, s.id)).filter((s) => s.required);
   const invalid = secs.filter((s) => !s.valid).length;
   const depts = db.departments.map((d) => {
     const list = complete.filter((r) => r.target.dept === d.id);

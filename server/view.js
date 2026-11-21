@@ -1,7 +1,7 @@
 // What each signed-in user is allowed to see (FR2, NFR5, NFR6).
 // The browser gets a copy of the data with the same shape as before, but with
 // everything the user may not see removed. The pages then work as they did.
-import { canSeeAll, canSeeOwn, canSeeDept, canSeeComments, isResultHead, policyFor } from '../src/lib/logic.js';
+import { canSeeAll, canSeeOwn, canSeeDept, canSeeComments, isResultHead, policyFor, targetType } from '../src/lib/logic.js';
 import { decryptText } from './secrets.js';
 
 // For progress tables we only reveal THAT a student responded, not their answers.
@@ -21,10 +21,15 @@ export function viewFor(db, user) {
   // so a comment can't be traced to one of very few students. Students' submission times are never sent
   // outside HR, so they can't be matched with who was online.
   const stAnswered = new Map();
-  for (const t of db.tasks) if (t.group === 'ST' && t.response) { const k = t.periodId + '|' + t.targetId; stAnswered.set(k, (stAnswered.get(k) || 0) + 1); }
+  for (const t of db.tasks) if (t.group === 'ST' && t.response) {
+    const tt = t.targetType || targetType(db, people.get(t.targetId));
+    const k = `${t.periodId}|${t.targetId}|${tt}`;
+    stAnswered.set(k, (stAnswered.get(k) || 0) + 1);
+  }
   const shown = (t, r) => {
     if (t.group !== 'ST') return r;
-    const enough = (stAnswered.get(t.periodId + '|' + t.targetId) || 0) >= (policyFor(db, t.periodId).minAnonymity || 0);
+    const tt = t.targetType || targetType(db, people.get(t.targetId));
+    const enough = (stAnswered.get(`${t.periodId}|${t.targetId}|${tt}`) || 0) >= (policyFor(db, t.periodId).minAnonymity || 0);
     return { ...r, submittedAt: null, comment: enough ? r.comment : null, commentHidden: !enough && !!r.comment };
   };
 
@@ -64,9 +69,11 @@ export function viewFor(db, user) {
     departments: db.departments,
     // never the password hash; HR also gets the account details it manages
     users: db.users.map((u) => (isHR
-      ? { id: u.id, username: u.username, email: u.email, name: u.name, role: u.role, position: u.position, dept: u.dept, evaluatorGroupIds: u.evaluatorGroupIds, active: u.active, mustChangePassword: u.mustChangePassword, hasTempPassword: !!u.tempPassword && u.mustChangePassword }
-      : { id: u.id, name: u.name, role: u.role, position: u.position, dept: u.dept, active: u.active })),
+      ? { id: u.id, username: u.username, email: u.email, name: u.name, role: u.role, position: u.position, dept: u.dept, evaluatorGroupIds: u.evaluatorGroupIds, evaluateeTypeIds: u.evaluateeTypeIds, accessRoleId: u.accessRoleId, active: u.active, mustChangePassword: u.mustChangePassword, hasTempPassword: !!u.tempPassword && u.mustChangePassword }
+      : { id: u.id, name: u.name, role: u.role, position: u.position, dept: u.dept, evaluateeTypeIds: u.evaluateeTypeIds, accessRoleId: u.accessRoleId, active: u.active })),
     evaluatorGroups: db.evaluatorGroups || [],
+    evaluateeRoles: db.evaluateeRoles || [],
+    accessRoles: db.accessRoles || [],
     sections: db.sections.map((s) => (isHR ? s : { ...s, studentIds: [] })),
     criteria: db.criteria,
     instruments: db.instruments,

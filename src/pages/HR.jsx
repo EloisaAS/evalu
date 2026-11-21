@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '../lib/store';
 import {
-  TARGET_TYPES, STAGES, STAGE_LABEL, taskStatus, userById, sectionStats, targetsOf, evaluatorGroups, deptName, groupName,
+  STAGES, STAGE_LABEL, taskStatus, userById, sectionStats, sectionStatsByRole, targetsOf, targetTypesOf, evaluateeRoles, evaluateeRoleName, evaluatorGroups, deptName, groupName,
   formUsed, itemCategory, effectiveWeights, isExemptSection, isTeacher, pendingApprovals, periodCovers, CLASS_TYPES, approvalRuleText, policyFor,
 } from '../lib/logic';
 
@@ -153,7 +153,7 @@ export function Assignments() {
   const [q, setQ] = useState('');
   const [grp, setGrp] = useState('');
   const [st, setSt] = useState('');
-  const [add, setAdd] = useState({ evaluatorId: '', targetId: '' });
+  const [add, setAdd] = useState({ evaluatorId: '', targetId: '', targetType: '' });
   const tasks = db.tasks.filter((t) => t.periodId === pid);
   const evaluators = db.users.filter((u) => u.role !== 'ST' && evaluatorGroups(u).length);
   const summary = {};
@@ -167,8 +167,10 @@ export function Assignments() {
   const addOne = async () => {
     setMsg('');
     if (!add.evaluatorId || !add.targetId) return setMsg('Choose an evaluator and a person to evaluate.');
+    if (!add.targetType) return setMsg('Choose the evaluatee role for this assignment.');
     if (await act('addAssignment', { periodId: pid, ...add })) setMsg('Assignment added.');
   };
+  const addTarget = userById(db, add.targetId);
 
   return (
     <>
@@ -191,7 +193,12 @@ export function Assignments() {
         <Card title="Add an evaluator assignment">
           <div className="row">
             <Select value={add.evaluatorId} onChange={(v) => setAdd({ ...add, evaluatorId: v })}><option value="">Evaluator…</option>{evaluators.map((u) => <option key={u.id} value={u.id}>{u.name} ({evaluatorGroups(u).map((g) => groupName(db, g)).join(' / ')})</option>)}</Select>
-            <Select value={add.targetId} onChange={(v) => setAdd({ ...add, targetId: v })}><option value="">Evaluates…</option>{targetsOf(db).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</Select>
+            <Select value={add.targetId} onChange={(v) => {
+              const next = userById(db, v);
+              const types = targetTypesOf(db, next);
+              setAdd({ ...add, targetId: v, targetType: types.length === 1 ? types[0] : '' });
+            }}><option value="">Evaluates…</option>{targetsOf(db).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</Select>
+            {addTarget && targetTypesOf(db, addTarget).length > 1 && <Select value={add.targetType} onChange={(v) => setAdd({ ...add, targetType: v })}><option value="">Evaluatee role…</option>{targetTypesOf(db, addTarget).map((id) => <option key={id} value={id}>{evaluateeRoleName(db, id)}</option>)}</Select>}
             <button onClick={addOne}>Add</button>
           </div>
         </Card>
@@ -207,7 +214,7 @@ export function Assignments() {
           <tbody>
             {rows.map((t) => (
               <tr key={t.id}>
-                <td>{userById(db, t.evaluatorId).name}</td><td>{groupName(db, t.group)}</td><td>{userById(db, t.targetId).name}</td>
+                <td>{userById(db, t.evaluatorId).name}</td><td>{groupName(db, t.group)}</td><td>{userById(db, t.targetId).name}<div className="muted small">{evaluateeRoleName(db, t.targetType || targetTypesOf(db, userById(db, t.targetId))[0])}</div></td>
                 <td>{db.sections.find((x) => x.id === t.sectionId)?.code || '—'}</td><td><StatusBadge s={taskStatus(db, t)} /></td>
                 <td>{!t.response && <button className="ghost" onClick={async () => (await ask('Remove this task?', `${userById(db, t.evaluatorId).name} will no longer evaluate ${userById(db, t.targetId).name} in this period.`, { ok: 'Remove task', danger: true })) && act('removeTask', { taskId: t.id })}>Remove</button>}</td>
               </tr>
@@ -397,7 +404,7 @@ export function Forms() {
   ].filter(Boolean).join(', ');
   const label = (i) => `Rated by ${i.group === 'ST' ? 'the students' : `the ${groupName(db, i.group)}`}${whenUsed(i) ? ` — ${whenUsed(i)}` : ''}${!isUb(i) ? (i.items.length ? ' (custom form)' : ' (custom form, no questions yet)') : ''}${i.active === false ? ` (old version ${i.version || 1})` : ''}`;
   const groupOrder = (db.evaluatorGroups || []).map((g) => g.id);
-  const byType = Object.keys(TARGET_TYPES).map((tt) => [tt, forms.filter((i) => i.targetType === tt)
+  const byType = evaluateeRoles(db).map(({ id: tt }) => [tt, forms.filter((i) => i.targetType === tt)
     .sort((a, b) => groupOrder.indexOf(a.group) - groupOrder.indexOf(b.group) || (a.dept ? 99 : VORDER.indexOf(a.variant || '')) - (b.dept ? 99 : VORDER.indexOf(b.variant || '')) || (b.version || 1) - (a.version || 1))]).filter(([, l]) => l.length);
 
   return (
@@ -407,11 +414,11 @@ export function Forms() {
       <Card title="Evaluation forms" actions={<label className="inline muted"><input type="checkbox" checked={showOld} onChange={(e) => setShowOld(e.target.checked)} /> Show old versions</label>}>
         <div className="row">
           <label className="inline"><span className="muted">Who is evaluated</span>
-            <Select value={ttF} onChange={(v) => { setTtF(v); const first = newestFirst(db.instruments.filter((i) => (showOld || i.active !== false) && (!v || i.targetType === v))).at(-1); if (first) setSel(first.id); }} aria-label="Who is evaluated"><option value="">Everyone</option>{Object.entries(TARGET_TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select>
+            <Select value={ttF} onChange={(v) => { setTtF(v); const first = newestFirst(db.instruments.filter((i) => (showOld || i.active !== false) && (!v || i.targetType === v))).at(-1); if (first) setSel(first.id); }} aria-label="Who is evaluated"><option value="">Everyone</option>{evaluateeRoles(db).map(({ id, name }) => <option key={id} value={id}>{name}</option>)}</Select>
           </label>
           <label className="inline wide"><span className="muted">Form</span>
             <Select value={sel} onChange={setSel} className="wide" aria-label="Form">
-              {byType.map(([tt, list]) => <optgroup key={tt} label={TARGET_TYPES[tt]}>{list.map((i) => <option key={i.id} value={i.id}>{label(i)}</option>)}</optgroup>)}
+              {byType.map(([tt, list]) => <optgroup key={tt} label={evaluateeRoleName(db, tt)}>{list.map((i) => <option key={i.id} value={i.id}>{label(i)}</option>)}</optgroup>)}
             </Select>
           </label>
           {ins && ins.active !== false && <button className="ghost" onClick={async () => { const r = await act('reviseForm', { instrumentId: ins.id }); if (r) { setSel(r.id); setMsg(`Version ${r.version} created. Edit it below; evaluations already submitted keep the old version.`); } }}>Create new version</button>}
@@ -419,7 +426,7 @@ export function Forms() {
         {ins && (
           <>
             <div className="form-about">
-              <span><b>{TARGET_TYPES[ins.targetType]}</b>, rated by <b>{ins.group === 'ST' ? 'the students' : `the ${groupName(db, ins.group)}`}</b></span>
+              <span><b>{evaluateeRoleName(db, ins.targetType)}</b>, rated by <b>{ins.group === 'ST' ? 'the students' : `the ${groupName(db, ins.group)}`}</b></span>
               <span>Used for: {whenUsed(ins) || 'everyone of this kind'}</span>
               <span>{isUb(ins) ? <>UB tool: {ins.name.replace(' (UB tool)', '')}</> : <>Custom form made in evalU (not one of UB's tools){!ins.items.length && <> · <b>no questions yet</b></>}</>}</span>
               <span>{(ins.version || 1) === 1 ? 'Original version' : `Version ${ins.version} (changed ${ins.version - 1} time${ins.version > 2 ? 's' : ''})`}{ins.active === false ? ' · old, kept for past results' : ' · in use'}</span>
@@ -495,7 +502,7 @@ export function Forms() {
       <details className="card add-form">
         <summary><b>+ Add a custom form</b> <span className="muted">(only if UB adds a new evaluation tool; the UB forms above are already set up)</span></summary>
         <div className="row">
-          <Select value={nf.targetType} onChange={(v) => setNf({ ...nf, targetType: v, group: groupsFor(v)[0] })}>{Object.entries(TARGET_TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select>
+          <Select value={nf.targetType} onChange={(v) => setNf({ ...nf, targetType: v, group: groupsFor(v)[0] })}>{evaluateeRoles(db).filter((r) => r.active !== false).map(({ id, name }) => <option key={id} value={id}>{name}</option>)}</Select>
           <Select value={nf.group} onChange={(v) => setNf({ ...nf, group: v })}>{groupsFor(nf.targetType).map((g) => <option key={g} value={g}>{groupName(db, g)}</option>)}</Select>
           <Select value={nf.dept} onChange={(v) => setNf({ ...nf, dept: v })}><option value="">All departments</option>{db.departments.map((d) => <option key={d.id} value={d.id}>Only {d.name}</option>)}</Select>
           <Select value={nf.variant} onChange={(v) => setNf({ ...nf, variant: v })}>{Object.entries(CLASS_TYPES).map(([k, l]) => <option key={k} value={k}>{k ? `Only for: ${l}` : 'Any type of class'}</option>)}</Select>
@@ -564,11 +571,16 @@ function ClassProgress({ title, period: p, secs }) {
   const { db } = useApp();
   const [only, setOnly] = useState('');
   const [dept, setDept] = useState('');
-  const shown = secs.filter((s) => {
+  const expanded = secs.flatMap((s) => {
+    if (isExemptSection(s)) return [{ ...s, stats: null }];
+    const stats = sectionStatsByRole(db, p.id, s.id);
+    return stats.length ? stats.map((x) => ({ ...s, stats: x })) : [{ ...s, stats: sectionStats(db, p.id, s.id) }];
+  });
+  const shown = expanded.filter((s) => {
     if (dept && s.dept !== dept) return false;
     if (!only) return true;
     if (isExemptSection(s)) return false;
-    const st = sectionStats(db, p.id, s.id);
+    const st = s.stats;
     return only === 'low' ? st.required && st.belowHalf : st.required && !st.belowHalf;
   });
   const depts = db.departments.filter((d) => secs.some((s) => s.dept === d.id));
@@ -580,11 +592,11 @@ function ClassProgress({ title, period: p, secs }) {
                 {depts.length > 1 && <Select value={dept} onChange={setDept}><option value="">All departments</option>{depts.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select>}
               </div>
               <table>
-                <thead><tr><th>Class</th><th>Faculty</th><th>Responded</th><th>Rate</th><th>Standing</th></tr></thead>
+                <thead><tr><th>Class</th><th>Faculty</th><th>Evaluatee role</th><th>Responded</th><th>Rate</th><th>Standing</th></tr></thead>
                 <tbody>{rows.map((s) => {
-                  if (isExemptSection(s)) return <tr key={s.id}><td>{s.code} – {s.subject}</td><td>{userById(db, s.facultyId)?.name}</td><td colSpan={2} className="muted">—</td><td><Badge kind="muted">not evaluated (practicum/internship/field trip)</Badge></td></tr>;
-                  const st = sectionStats(db, p.id, s.id);
-                  return <tr key={s.id}><td>{s.code} – {s.subject}</td><td>{userById(db, s.facultyId)?.name}</td><td><div className="meter-row"><Meter value={st.rate} mark={0.5} /><span>{st.responded}/{st.required} <span className="muted">needs {st.needed}</span></span></div></td><td>{pct(st.rate)}</td>
+                  if (isExemptSection(s)) return <tr key={s.id}><td>{s.code} – {s.subject}</td><td>{userById(db, s.facultyId)?.name}</td><td>—</td><td colSpan={2} className="muted">—</td><td><Badge kind="muted">not evaluated (practicum/internship/field trip)</Badge></td></tr>;
+                  const st = s.stats;
+                  return <tr key={`${s.id}|${st.targetRole || ''}`}><td>{s.code} – {s.subject}</td><td>{userById(db, s.facultyId)?.name}</td><td>{evaluateeRoleName(db, st.targetRole)}</td><td><div className="meter-row"><Meter value={st.rate} mark={0.5} /><span>{st.responded}/{st.required} <span className="muted">needs {st.needed}</span></span></div></td><td>{pct(st.rate)}</td>
                     <td>{!st.required ? <span className="muted">no tasks yet</span> : st.belowHalf ? <Badge kind="overdue">below half + 1 – would be excluded</Badge> : <Badge kind="completed">enough responses</Badge>}</td></tr>;
                 })}</tbody>
               </table>

@@ -99,7 +99,7 @@ function EvalForm({ taskId, onClose, onDone }) {
   const [answers, setAnswers] = useState(task.draft?.answers || {});
   const [comment, setComment] = useState(task.draft?.comment || '');
   // Dean/Principal and AP/PC/SH forms: two boxes, as on UB's paper form
-  const twoBoxes = hasPlanBoxes(task.group, targetType(db, target));
+  const twoBoxes = hasPlanBoxes(task.group, task.targetType || targetType(db, target));
   const saved = commentParts(task.draft?.comment);
   const [plan, setPlan] = useState(saved?.plan ?? '');
   const [improve, setImprove] = useState(saved?.improve ?? saved?.text ?? '');
