@@ -2,7 +2,7 @@
 // All names, criteria text and ratings below are SAMPLE data, editable in the app.
 // Used by the server (server/seed.js) to fill an empty database, and by the tests.
 // Passwords are not part of this data; the server hashes DEMO_PASSWORD for every account.
-import { UB_DEPARTMENTS, generateTasks, runThresholdCheck, formForTask, targetType, effectiveWeights } from './logic.js';
+import { UB_DEPARTMENTS, DEFAULT_EVALUATOR_GROUPS, generateTasks, runThresholdCheck, formForTask, targetType, effectiveWeights } from './logic.js';
 import { installUbForms } from './ubInstall.js';
 
 export const DEMO_PASSWORD = 'demo1234';
@@ -14,7 +14,7 @@ function rng(seed) {
 
 export function buildSeed() {
   const R = rng(2026);
-  const db = { version: 1, departments: [], users: [], sections: [], criteria: [], instruments: [], rules: {}, periods: [], tasks: [], requests: [], pastResults: [], notifications: [] };
+  const db = { version: 1, departments: [], evaluatorGroups: DEFAULT_EVALUATOR_GROUPS.map((g) => ({ ...g })), users: [], sections: [], criteria: [], instruments: [], rules: {}, periods: [], tasks: [], requests: [], pastResults: [], notifications: [] };
   // the real UB departments; the sample people work in three of them (ids A, B and C) and in Basic Education
   db.departments = [
     { id: 'A', name: 'School of Information Technology (SIT)', kind: 'college' },

@@ -182,7 +182,7 @@ try {
   });
   /* ---------------- Part C: dynamic computation engine (formulas as data) ---------------- */
   const F = await import('../src/lib/formula.js');
-  const base = { method: 'WEIGHTED_AVERAGE', components: [{ group: 'ST', weight: 40, aggregation: 'SECTION_AVERAGE' }, { group: 'DEAN', weight: 40, aggregation: 'AVERAGE' }, { group: 'CHAIR', weight: 20, aggregation: 'AVERAGE' }], expression: '', missing: 'REWEIGHT', minGroups: 1, rounding: { decimals: 2, method: 'HALF_UP' } };
+  const base = { method: 'WEIGHTED_AVERAGE', components: [{ group: 'ST', weight: 40, aggregation: 'SECTION_AVERAGE' }, { group: 'DEAN', weight: 40, aggregation: 'AVERAGE' }, { group: 'CHAIR', weight: 20, aggregation: 'AVERAGE' }], expression: '', missing: 'REWEIGHT', minGroups: 1, participation: { percent: 50, plusOne: true }, rounding: { decimals: 2, method: 'HALF_UP' } };
   const S = { ST: 4.3, DEAN: 4.5, CHAIR: 4.1 };
   const w = (a, b, c) => ({ ...base, components: [{ ...base.components[0], weight: a }, { ...base.components[1], weight: b }, { ...base.components[2], weight: c }] });
   await tc('TC-34', 'Dynamic formula: weights', 'Same answers, 40/40/20 then 30/50/20 (configuration only)', [4.34, 4.36], () => [F.computeFinal(w(40, 40, 20), S).final, F.computeFinal(w(30, 50, 20), S).final]);
@@ -192,6 +192,14 @@ try {
   await tc('TC-38', 'Security: no code execution', 'Expressions with code: process.exit(), constructor(1), ST.constructor, __proto__', 'all rejected', () => (['process.exit()', 'constructor(1)', 'ST.constructor', '__proto__', 'require("fs")'].every((x) => { try { F.parseExpression(x, ['ST']); return false; } catch { return true; } }) ? 'all rejected' : 'one was accepted'));
   await tc('TC-39', 'Dynamic formula: rounding', '3.465 half up / half even, 3.469 down, 3.461 up; 3.4567 to 3 decimals', [3.47, 3.46, 3.46, 3.47, 3.457], () => [F.roundBy(3.465, 2, 'HALF_UP'), F.roundBy(3.465, 2, 'HALF_EVEN'), F.roundBy(3.469, 2, 'DOWN'), F.roundBy(3.461, 2, 'UP'), F.roundBy(3.4567, 3, 'HALF_UP')]);
   await tc('TC-40', 'Formula validation', 'Weights total 90%; a group with no form for this category', 2, () => F.validateFormula({ ...w(40, 30, 20) }, { allowedGroups: ['ST', 'DEAN', 'CHAIR'] }).length + F.validateFormula({ ...base, components: [...base.components.slice(0, 2), { group: 'NTPHEAD', weight: 20, aggregation: 'AVERAGE' }] }, { allowedGroups: ['ST', 'DEAN', 'CHAIR'] }).length, (n) => n === 2);
+  await tc('TC-56', 'Formula conditions', 'Safe IF and comparison operators choose a result from configured score conditions', 4.3, () => F.computeFinal({ ...base, method: 'CUSTOM', components: [base.components[0]], expression: 'if(ST >= 4, ST, 2)', missing: 'INVALIDATE' }, { ST: 4.3 }).final);
+  await tc('TC-57', 'Score transformation', 'Transform a group score before weighted computation', 3.48, () => F.computeFinal({ ...base, components: [{ ...base.components[0], transform: 'X / 2' }, ...base.components.slice(1)] }, S).final);
+  await tc('TC-58', 'Formula participation', 'A formula can count a class at 50% without the legacy plus-one policy', { valid: true, score: 3.5 }, () => {
+    const d = scenario({ students: 40, answered: 20 });
+    d.periods[0].formulas = { COLLEGE_FACULTY: { ...L.defaultFormula(d.rules.COLLEGE_FACULTY), participation: { percent: 50, plusOne: false } } };
+    const r = L.computeTarget(d, 'P', 'T');
+    return { valid: r.groups.ST.score != null, score: r.groups.ST.score };
+  });
 
   const before = (await call('/api/data', { cookie: hr })).data;
   const p1Before = L.computeTarget(before, 'p1', 'fac_a1').final;
@@ -286,7 +294,27 @@ try {
       oldVersion: d2.formulas.find((x) => x.id === fxId).status,
     };
   });
-  await tc('TC-55', 'Reproducible results', 'Close a period computed with an approved formula; then recompute every stored result with the formula version stored with it', { keepsFormula: true, keepsApproval: true, allSame: true }, async () => {
+  await tc('TC-59', 'Effective dates', 'An approved formula is only applied to periods starting inside its configured date window', { before: false, during: true }, async () => {
+    const config = { method: 'AVERAGE', components: [{ group: 'NTPSTAFF', aggregation: 'AVERAGE' }], missing: 'REWEIGHT', minGroups: 1, participation: { percent: 50, plusOne: true }, rounding: { decimals: 2, method: 'HALF_UP' }, effectiveFrom: '2099-01-01', effectiveUntil: '2099-12-31', name: 'Non-teaching head dated formula' };
+    const draft = await act(hr, 'saveFormulaDraft', { targetType: 'NTP_HEAD', config });
+    if (!draft.data.result) return { draftError: draft.data.error };
+    const id = draft.data.result.id;
+    const submit = await act(hr, 'submitFormula', { id, basis: 'Validation test: effective dates' });
+    if (submit.status !== 200) return { submitError: submit.data.error };
+    const approve = await act(vp, 'approveFormula', { id });
+    if (approve.status !== 200) return { approvalError: approve.data.error };
+    const schedule = await act(hr, 'activateFormula', { id, when: 'next' });
+    if (schedule.status !== 200) return { scheduleError: schedule.data.error };
+    const before = await act(hr, 'createPeriod', { name: 'AY 2098-99 Term 1 (date validation)', startsOn: '2098-12-01', deadline: '2098-12-31' });
+    const during = await act(hr, 'createPeriod', { name: 'AY 2099-00 Term 1 (date validation)', startsOn: '2099-02-01', deadline: '2099-02-28' });
+    if (!before.data.result || !during.data.result) return { beforeError: before.data.error, duringError: during.data.error };
+    const d = (await call('/api/data', { cookie: hr })).data;
+    return {
+      before: !!d.periods.find((p) => p.id === before.data.result.id).formulas?.NTP_HEAD,
+      during: d.periods.find((p) => p.id === during.data.result.id).formulas?.NTP_HEAD?.id === id,
+    };
+  });
+  await tc('TC-55', 'Reproducible results', 'Close a period computed with an approved formula; recompute it with its formula and algorithm versions', { keepsFormula: true, keepsAlgorithmVersion: true, keepsApproval: true, allSame: true }, async () => {
     const d0 = (await call('/api/data', { cookie: hr })).data;
     const p = d0.periods.find((x) => x.status === 'open' && x.formulas?.COLLEGE_FACULTY?.id === fxId);
     await act(hr, 'closePeriod', { periodId: p.id });
@@ -295,8 +323,47 @@ try {
     const again = (r) => F.computeFinal(r.data.formula, Object.fromEntries(Object.entries(r.data.groups).map(([g, x]) => [g, x.score ?? null]))).final;
     return {
       keepsFormula: rows.length > 0 && rows.every((r) => r.data.formula.id === fxId && r.data.formula.method === 'AVERAGE' && Array.isArray(r.data.formula.components)),
+      keepsAlgorithmVersion: rows.length > 0 && rows.every((r) => r.data.formula.methodVersion === 1),
       keepsApproval: rows.every((r) => r.data.formula.approvedBy && r.data.formula.approvedAt && r.data.formula.basis),
       allSame: d.results.filter((r) => Array.isArray(r.data.formula?.components)).every((r) => again(r) === r.data.final),
+    };
+  });
+  await tc('TC-60', 'HR-configurable evaluator groups', 'HR adds a Department Head group and assigns it to a staff account; the catalog and membership persist', { group: true, membership: true }, async () => {
+    const added = await act(hr, 'addEvaluatorGroup', { name: 'Department Head', targetTypes: ['COLLEGE_FACULTY'] });
+    if (added.status !== 200) return { addError: added.data.error };
+    const created = await act(hr, 'createUser', {
+      name: 'Sample Department Head', username: 'sample_dept_head', email: 'sample.dept.head@ubaguio.edu',
+      role: 'TP', position: 'faculty', dept: 'A', evaluatorGroupIds: [added.data.result.id],
+    });
+    if (created.status !== 200) return { createError: created.data.error };
+    const d = (await call('/api/data', { cookie: hr })).data;
+    return {
+      group: d.evaluatorGroups.some((g) => g.id === added.data.result.id && g.name === 'Department Head'),
+      membership: d.users.some((u) => u.id === created.data.result.id && u.evaluatorGroupIds.includes(added.data.result.id)),
+    };
+  });
+  await tc('TC-61', 'Evaluator group access control', 'A student cannot add an evaluator group; HR cannot apply a group to an unknown category', { student: 403, invalidCategory: 400 }, async () => ({
+    student: (await act(student, 'addEvaluatorGroup', { name: 'Restricted Group', targetTypes: ['COLLEGE_FACULTY'] })).status,
+    invalidCategory: (await act(hr, 'addEvaluatorGroup', { name: 'Invalid Category Group', targetTypes: ['UNKNOWN'] })).status,
+  }));
+  await tc('TC-62', 'Versioned computation modules', 'A new algorithm version can be registered without changing the prior version used by saved formulas', { old: 3.5, new: 4, oldAgain: 3.5, duplicateRejected: true }, () => {
+    const components = ['ST', 'DEAN'].map((group) => ({ group, aggregation: 'AVERAGE' }));
+    const register = (version, compute) => F.registerMethod({
+      id: 'VERSIONED_TEST', version, label: 'Versioned test', missingRules: ['REWEIGHT'], compute,
+      words: () => 'Test formula', symbols: () => 'F = test',
+    });
+    register(1, (items) => ({ raw: items.reduce((sum, item) => sum + item.value, 0) / items.length, how: 'average' }));
+    const oldFormula = { ...base, method: 'VERSIONED_TEST', methodVersion: 1, components, missing: 'REWEIGHT' };
+    const scores = { ST: 3, DEAN: 4 };
+    const old = F.computeFinal(oldFormula, scores).final;
+    register(2, (items) => ({ raw: Math.max(...items.map((item) => item.value)), how: 'maximum' }));
+    let duplicateRejected = false;
+    try { register(1, () => ({ raw: 0 })); } catch { duplicateRejected = true; }
+    return {
+      old,
+      new: F.computeFinal({ ...oldFormula, methodVersion: 2 }, scores).final,
+      oldAgain: F.computeFinal(oldFormula, scores).final,
+      duplicateRejected,
     };
   });
 } finally {
@@ -315,7 +382,7 @@ const md = [
   '',
   'Each case runs automatically (`npm run test:validation`). "Actual" is measured during this run, not written by hand.',
   'Part A checks the computation rules on controlled data; Part B runs the real server, database and access control;',
-  'Part C checks the formula engine and its approval and versions; Part D the comment analysis; Part E the computation modules (plug-ins), the effective period and the reproducibility of stored results.',
+  'Part C checks the formula engine and its approval and versions; Part D the comment analysis; Part E the computation modules (plug-ins), the effective period and the reproducibility of stored results; Part F HR-configurable evaluator groups and access control.',
   '',
   '| ID | Requirement | Scenario | Expected | Actual | Result |',
   '|---|---|---|---|---|---|',

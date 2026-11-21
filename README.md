@@ -160,11 +160,12 @@ You can also add a section by hand. Practicum, internship and field trip subject
 - **Versions**: once a form has submitted answers it is locked. Click **Create new version** to change it; past results keep the old version.
 - **Criteria bank**: criteria already answered can't be reworded or deleted, so old reports stay the same.
 
-#### Weights
-How much each evaluator group counts: College faculty 40 / 40 / 20, Basic Education 40 / 20 / 20 / 20 (Table 6). Weights for evaluating Deans are not in the manuscript, so HR enters them. Changes apply to open and future periods; **closed periods keep their weights**.
+#### Scoring & calculation
+This is the single HR page for both evaluator percentages and the final-score method. The starting rules include College faculty 40 / 40 / 20 and Basic Education 40 / 20 / 20 / 20 (Table 6). HR can adjust the groups and percentages or choose equal averaging, then preview and test the result. Formula changes go through VP approval; each period keeps the formula version it started with.
 
 #### Accounts
 - **Add account**: enter a username, full name, role, position and department (students also choose their classes). The app shows a **temporary password once**, so write it down and give it to the person privately.
+- **Evaluator groups and roles**: HR can add evaluator groups (for example, Department Head), choose which evaluatee categories they apply to, and assign those groups to staff accounts. System access roles such as HR and VP remain fixed.
 - **Edit**: change someone's name, role, department or classes.
 - **Reset password**: gives the person a new temporary password and signs them out everywhere.
 - **Deactivate**: the person can't sign in any more and gets no new tasks. Their past evaluations stay in the reports. **Reactivate** undoes this.
@@ -173,7 +174,7 @@ How much each evaluator group counts: College faculty 40 / 40 / 20, Basic Educat
 #### Reports and Analytics
 - **Reports**: overall, per subject, per section, **individual report** (final breakdown, each class, Dean and Program Chair, with **per-item results and the spread of ratings 1–4**, and comments grouped by source), **department summary**, **Print UB reports** (HR; the same layouts as the HRMC samples in `templates and for printing pdf/SAMPLE`): the **Comprehensive report** (one sheet per person with each evaluator group's average, the final rating and the interpretation 3.51–4.00 Outstanding, 3.00–3.50 Satisfactory, 2.50–2.99 Fair, 2.49 and below Poor; one or three per page), the **Performance evaluation** sheets (one per evaluator group, and per class for students: summary by category weighted by its percentage, over-all, interpretation, and the average of every question) and the **Verbatim** sheet (supervisors' comments only, like UB's sample: "BY THE DEAN AS A FACULTY", "BY THE AP/PC/SH AS A FACULTY", each with the employee's development plan and the areas to be improved; students' comments stay on screen in the individual report); faculty get the same sheets under **My results**, **requests from offices** (results are released only through the person's dean), and **earlier records** (import final scores kept before evalU). Use **Print / save as PDF** for a file. The other tabs (Overall, Per subject, Per section, Department summary, All comments) print as a formal HRMC sheet too: UB logo and header, the semester, a bordered table with the interpretation, the rating key and the "computer generated" line; the Individual report prints that person's UB sheets.
 - **Analytics**: **key findings** with possible actions, trends over time, **rating distribution**, **participation** by department, department comparison, **strengths and weaknesses by category**, **evaluator agreement**, **compare two periods** (per-person change, with a warning when the periods used different rules, weights or form versions), and **item-level results** that flag items below the policy cutoff (3.00 by default) and items that stay low across periods. Each card has a "Where this comes from" note (data, formula, limits).
-- **Computation formulas** (HR) / **Formula approvals** (VP): the final rating is computed by an engine that runs a formula stored as data, so evalU does not depend on one institutional formula. Methods are plug-in modules (src/lib/methods/, one file each): weighted average, simple average, geometric mean, harmonic mean or a safe custom expression; a new method is one new module file. HR sets groups, weights, aggregation, missing-group rule, minimum groups, rounding, and department-only formulas. Versions go draft → VP approval → start now or with the next period → archived; approved versions never change, each period keeps its version, and closing a period stores every result with its formula version, parameters, approval and breakdown. "Check old ratings" recomputes every stored result with its own version. A simulator tests a draft on sample scores, standard cases and a real period. Every result shows "How this rating was computed".
+- **Scoring & calculation** (HR) / **Formula approvals** (VP): one page for evaluator percentages and the final-rating method. HR chooses weighted or equal averaging, configures evaluator groups, aggregation, missing-group handling, minimum groups, student participation, per-group score transformations, rounding, effective dates and department-only formulas, then previews and tests the result. The engine runs a formula stored as data, so evalU does not depend on one institutional formula. Methods are versioned plug-in modules (`src/lib/methods/`): weighted average, simple average, geometric mean, harmonic mean or a safe custom expression; adding a fundamentally new method still requires a developer to add a module, while a changed algorithm gets a new immutable method version. Each formula and computed result stores both its policy-formula version and algorithm version, so an implementation update cannot silently change historical calculations. Formula versions go draft → VP approval → activation → archived; approved versions never change, each period keeps its version, and closing a period stores every result with its formula version, parameters, approval and breakdown. "Check old ratings" recomputes every stored result with its own versions. Every result shows "How this rating was computed".
 - **QR code per class** (Class lists for HR, My results for teachers): a printable card; students scan it in class and, after signing in, that class's evaluation opens directly.
 - **Comment analysis**: comments are tagged positive / negative / mixed / neutral, marked as suggestions, and sorted by topic, with summaries in Reports and Analytics. Built-in English and Filipino word lists; nothing leaves evalU.
 - **Policy & rules**: the participation rule, rating bands, rounding, low-item cutoff, missing-group rule, minimum students before comments are shown, and how many VPs must approve. Every change needs a reason and is kept as a version; closed periods keep the version they were computed with.
@@ -227,7 +228,7 @@ Sign in as `vp`. Only the Vice Presidents approve results (there is no Director 
 
 ### Clinical Instructor (CI)
 
-Sign in as `ci_c1`. Clinical Instructors are **only in the School of Nursing** (for example Nursing duty in the hospital or skills lab), so only Nursing students evaluate them. The system refuses a CI account in any other department. The **students of their clinical class** and **their dean** evaluate them, **Students 50 / Dean 50** to start, because the official CI weights are not given yet (they are "??" in the follow-up diagram); HR can change them under **Weights**. CIs don't evaluate anyone. **My results** shows their class's response progress and, after release, their results.
+Sign in as `ci_c1`. Clinical Instructors are **only in the School of Nursing** (for example Nursing duty in the hospital or skills lab), so only Nursing students evaluate them. The system refuses a CI account in any other department. The **students of their clinical class** and **their dean** evaluate them, **Students 50 / Dean 50** to start, because the official CI weights are not given yet (they are "??" in the follow-up diagram); HR can change them under **Scoring & calculation**. CIs don't evaluate anyone. **My results** shows their class's response progress and, after release, their results.
 
 ### HRMC Assistant
 
@@ -250,7 +251,7 @@ Sign in as `hr_assistant`. The HRMC Assistant has the same screens and powers as
 
 Try this with the sample accounts to see the whole flow:
 
-1. **HR** (`hr`): under **Weights**, check the weights.
+1. **HR** (`hr`): under **Scoring & calculation**, check the percentages and scoring method.
 2. **HR**: under **Periods & release**, create a new period, then **Generate tasks** under Assignments.
 3. **Student** (`st_a01@s.ubaguio.edu`): submit an evaluation with a comment.
 4. **Dean** (`dean_a@ubaguio.edu`): evaluate a faculty member.
@@ -267,7 +268,7 @@ To start over afterwards, sign in as HR and click **Reset simulated data** under
 
 1. Each evaluation gets a weighted average of its ratings (1–4), using the form's category and item weights.
 2. **Students**: a class counts only if **at least half of the class plus one** answered (26 of 50). Qualifying classes are averaged. Several program chairs are averaged too.
-3. The groups (Students, Dean, Program Chair…) are combined with the **rating formula** in force for that period (set by HR on the Rating formula page; no formula is built into the program).
+3. The groups (Students, Dean, Program Chair…) are combined with the **rating formula** in force for that period (set by HR under Scoring & calculation; no formula is built into the program).
 4. If a group has **no valid result**, its weight is **removed from the denominator** (no dean → computed over 60%).
 5. The final score is **rounded to two decimal places**.
 
@@ -310,7 +311,7 @@ Requirements from Chapter 3, Tables 8 and 9.
 | FR2 | Each role sees and does only what it may | Menu per role; server checks every action (`server/actions.js`) and filters data (`server/view.js`) |
 | FR3 | Forms with weighted categories and items, per role and department | HR → Forms (categories, item weights, department-specific forms) |
 | FR4 | Revising a form makes a new version; past results unchanged | HR → Forms → Create new version; used forms and answered criteria are locked |
-| FR5 | HR sets evaluator weights per group | HR → Weights (40/40/20, 40/20/20/20, CI 50/50) |
+| FR5 | HR sets evaluator weights per group | HR → Scoring & calculation (40/40/20, 40/20/20/20, CI 50/50) |
 | FR6 | Assign from class lists, excluding internship/practicum/field trip | HR → Class lists (import) and Assignments → Generate tasks |
 | FR7 | Answer inside the system; teacher/subject/section fixed | My evaluations (no links, nothing to type) |
 | FR8 | Open and close per department and cycle | HR → Periods (choose departments) |
@@ -335,7 +336,7 @@ Requirements from Chapter 3, Tables 8 and 9.
 | NFR6 | Faculty can't see results before VP approval | Release requires every VP's approval |
 | NFR7 | Every view, change and release attributable | Audit log |
 | NFR8 | Revising a form or weights doesn't change past results | Form versions; each period keeps its weights |
-| NFR9 | Change forms and weights without code | Forms, Weights and Rating formula pages |
+| NFR9 | Change forms and weights without code | Forms and Scoring & calculation pages |
 | NFR10 | Keep records as long as storage permits | Nothing is deleted automatically |
 
 ## For developers
@@ -373,7 +374,7 @@ All data lives on a small Node server in `server/`. The browser only shows it.
 
 The database is SQLite (built into Node), stored in `server/data/evalu.db`. To look inside it, open the file with a tool like **DB Browser for SQLite**, preferably while the app is stopped.
 
-Tables: `departments`, `users`, `sections`, `section_students`, `criteria`, `instruments` (forms), `instrument_items`, `group_weights`, `periods`, `tasks`, `responses`, `answers`, `notifications`, `result_requests`, `past_results`, `audit_log`, `sessions`. The schema is at the top of `server/db.js`.
+Tables: `departments`, `evaluator_groups`, `users`, `sections`, `section_students`, `criteria`, `instruments` (forms), `instrument_items`, `group_weights`, `formulas` (versioned configurations), `periods`, `tasks`, `responses`, `answers`, `results` (stored with computation snapshots), `policies`, `notifications`, `result_requests`, `past_results`, `audit_log`, `sessions`. The schema is at the top of `server/db.js`.
 
 | File | What it does |
 | --- | --- |

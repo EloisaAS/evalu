@@ -4,6 +4,7 @@ import { shares, num, dec } from './util.js';
 
 export default {
   id: 'HARMONIC_MEAN',
+  version: 1,
   label: 'Percentages, and a low rating counts the most',
   help: 'The strictest: if one group gives a low rating, the final rating goes down the most (harmonic mean).',
   advanced: true,

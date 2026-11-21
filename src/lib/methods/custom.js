@@ -5,6 +5,7 @@ import { num } from './util.js';
 
 export default {
   id: 'CUSTOM',
+  version: 1,
   label: 'Write my own formula',
   help: 'Only if none of the other choices fits. Example: 0.3*ST + 0.5*DEAN + 0.2*CHAIR.',
   advanced: true,

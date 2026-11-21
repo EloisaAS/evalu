@@ -3,6 +3,7 @@ import { shares, pct, num, dec } from './util.js';
 
 export default {
   id: 'WEIGHTED_AVERAGE',
+  version: 1,
   label: 'Give each group a percentage',
   help: 'Example: 40% Students + 40% Dean + 20% Program Chair (weighted average).',
   usesWeights: true,

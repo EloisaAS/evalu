@@ -1,4 +1,5 @@
-// Safe calculator for HR's own formulas (no eval): numbers, group names, + - * / ( ) and avg(), min(), max().
+// Safe calculator for HR's own formulas (no eval): numbers, group names, arithmetic,
+// comparisons and avg(), min(), max(), if().
 // It never runs code typed by a user; any other word or symbol is rejected.
 
 // Only the exact names in these lists are accepted (never built-in object names like 'constructor').
@@ -8,10 +9,11 @@ const FUNCS = {
   avg: (xs) => xs.reduce((a, b) => a + b, 0) / xs.length,
   min: (xs) => Math.min(...xs),
   max: (xs) => Math.max(...xs),
+  if: null,
 };
 function tokenize(src) {
   const out = [];
-  const re = /\s*(?:(\d+(?:\.\d+)?|\.\d+)|([A-Za-z_][A-Za-z_]*)|([-+*/(),]))/y;
+  const re = /\s*(?:(\d+(?:\.\d+)?|\.\d+)|([A-Za-z_][A-Za-z_]*)|((?:<=|>=|==|!=|[<>])|[-+*/(),]))/y;
   let i = 0;
   while (i < src.length) {
     if (/\s/.test(src[i])) { i++; continue; }
@@ -47,9 +49,10 @@ export function parseExpression(src, allowedVars) {
         const fn = name.toLowerCase();
         if (!has(FUNCS, fn)) throw new Error(`Unknown function "${name}". Allowed: avg, min, max.`);
         take('(');
-        const args = [expr()];
-        while (peek()?.t === ',') { p++; args.push(expr()); }
+        const args = [compare()];
+        while (peek()?.t === ',') { p++; args.push(compare()); }
         take(')');
+        if (fn === 'if' && args.length !== 3) throw new Error('if() needs three values: if(condition, whenTrue, whenFalse).');
         return { op: 'fn', fn, args };
       }
       const v = name.toUpperCase();
@@ -68,7 +71,15 @@ export function parseExpression(src, allowedVars) {
     while (peek()?.t === '+' || peek()?.t === '-') { const o = toks[p++].t; a = { op: o, a, b: term() }; }
     return a;
   }
-  const tree = expr();
+  function compare() {
+    const a = expr();
+    if (['<', '<=', '>', '>=', '==', '!='].includes(peek()?.t)) {
+      const op = toks[p++].t;
+      return { op: 'cmp', cmp: op, a, b: expr() };
+    }
+    return a;
+  }
+  const tree = compare();
   if (p < toks.length) throw new Error(`Unexpected "${toks[p].v ?? toks[p].t}" after the end of the expression.`);
   return tree;
 }
@@ -78,10 +89,27 @@ export function evaluate(node, env) {
     case 'num': return node.v;
     case 'var': return has(env, node.v) ? env[node.v] ?? null : null;
     case 'neg': { const a = evaluate(node.a, env); return a == null ? null : -a; }
-    case 'fn': { if (!has(FUNCS, node.fn)) return null; const xs = node.args.map((x) => evaluate(x, env)); return xs.some((x) => x == null) ? null : FUNCS[node.fn](xs); }
+    case 'fn': {
+      if (!has(FUNCS, node.fn)) return null;
+      if (node.fn === 'if') {
+        const condition = evaluate(node.args[0], env);
+        return condition == null ? null : evaluate(node.args[condition ? 1 : 2], env);
+      }
+      const xs = node.args.map((x) => evaluate(x, env));
+      return xs.some((x) => x == null) ? null : FUNCS[node.fn](xs);
+    }
     default: {
       const a = evaluate(node.a, env), b = evaluate(node.b, env);
       if (a == null || b == null) return null;
+      if (node.op === 'cmp') {
+        if (node.cmp === '<') return a < b ? 1 : 0;
+        if (node.cmp === '<=') return a <= b ? 1 : 0;
+        if (node.cmp === '>') return a > b ? 1 : 0;
+        if (node.cmp === '>=') return a >= b ? 1 : 0;
+        if (node.cmp === '==') return a === b ? 1 : 0;
+        if (node.cmp === '!=') return a !== b ? 1 : 0;
+        return null;
+      }
       if (node.op === '+') return a + b;
       if (node.op === '-') return a - b;
       if (node.op === '*') return a * b;

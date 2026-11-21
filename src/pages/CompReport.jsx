@@ -6,7 +6,7 @@
 import { useState } from 'react';
 import { useApp } from '../lib/store';
 import {
-  GROUPS, computeTarget, deptName, interpretation, bandTable, policyFor, DEFAULT_POLICY, round2, targetsOf, targetType,
+  computeTarget, deptName, groupName, interpretation, bandTable, policyFor, DEFAULT_POLICY, round2, targetsOf, targetType,
   formOfTask, itemStats, itemCategory, responseScore, commentParts,
 } from '../lib/logic';
 import { Select, PrintButton, Empty } from '../ui';
@@ -31,10 +31,10 @@ const COLUMN = {
   PRIN: "PRINCIPAL'S EVALUATION", APRIN: "ASST. PRINCIPAL'S EVALUATION", SHEAD: "SUBJECT HEAD'S EVALUATION",
   FAC: "FACULTY'S EVALUATION", SEC: "SECRETARY'S EVALUATION", NTPHEAD: "HEAD'S EVALUATION", NTPSTAFF: "STAFF'S EVALUATION",
 };
-const columnFor = (type, g) => (type === 'DEAN' && g === 'CHAIR' ? "PROGRAM CHAIRS' EVALUATION" : type === 'CI' && g === 'DEAN' ? "DEAN'S/PC'S EVALUATION" : COLUMN[g] || `${GROUPS[g]?.toUpperCase()}'S EVALUATION`);
+const columnFor = (type, g, db) => (type === 'DEAN' && g === 'CHAIR' ? "PROGRAM CHAIRS' EVALUATION" : type === 'CI' && g === 'DEAN' ? "DEAN'S/PC'S EVALUATION" : COLUMN[g] || `${groupName(db, g)?.toUpperCase()}'S EVALUATION`);
 /** "BY THE DEAN AS A FACULTY", "BY THE AP/PC/SH AS A FACULTY" (VERBATIM.pdf) */
 const BY = { ST: 'STUDENTS', DEAN: 'DEAN', CHAIR: 'AP/PC/SH', PRIN: 'PRINCIPAL', APRIN: 'AP/PC/SH', SHEAD: 'AP/PC/SH', FAC: 'FACULTY', SEC: 'SECRETARY', NTPHEAD: 'HEAD OF OFFICE', NTPSTAFF: 'OFFICE STAFF' };
-const byFor = (type, g) => (type === 'DEAN' && g === 'CHAIR' ? 'PROGRAM CHAIRS' : type === 'CI' && g === 'DEAN' ? 'DEAN/PC' : BY[g] || GROUPS[g]?.toUpperCase());
+const byFor = (type, g, db) => (type === 'DEAN' && g === 'CHAIR' ? 'PROGRAM CHAIRS' : type === 'CI' && g === 'DEAN' ? 'DEAN/PC' : BY[g] || groupName(db, g)?.toUpperCase());
 const isNtp = (type) => String(type).startsWith('NTP');
 const TITLE = { COLLEGE_FACULTY: 'Faculty', BASICED_TEACHER: 'Faculty', CI: 'Faculty', DEAN: 'Dean / Principal', NTP_STAFF: 'Personnel', NTP_HEAD: 'Personnel' };
 const PERSON = { COLLEGE_FACULTY: 'Instructor', BASICED_TEACHER: 'Teacher', CI: 'Clinical Instructor', DEAN: 'Dean', NTP_STAFF: 'Employee', NTP_HEAD: 'Head of Office' };
@@ -76,13 +76,13 @@ export function CompSheet({ res, period, ctrl, db }) {
         <span><b>School:</b> <u className="comp-school">{schoolOf(db, res.target)}</u></span>
       </div>
       <table className="comp-table">
-        <thead><tr>{groups.map(([g]) => <th key={g}>{columnFor(res.type, g)}</th>)}<th className="comp-final">FINAL RATING</th><th>RATING INTERPRETATION</th></tr></thead>
+        <thead><tr>{groups.map(([g]) => <th key={g}>{columnFor(res.type, g, db)}</th>)}<th className="comp-final">FINAL RATING</th><th>RATING INTERPRETATION</th></tr></thead>
         <tbody><tr>{groups.map(([g, x]) => <td key={g}>{two(x.score)}</td>)}<td className="comp-final">{two(res.final)}</td><td>{res.final == null ? 'NO VALID RESULT' : interpretation(res.final, ntp, pol).toUpperCase()}</td></tr></tbody>
       </table>
       <div className="comp-foot">
         <div>
           <p>This copy is computer generated form, if issued without alteration, this does not require signature.</p>
-          {res.status === 'reweighted' && <p className="comp-note">No rating from {res.missing.map((g) => GROUPS[g]).join(', ')}, so the final rating uses the other groups ({res.basis}% of the weight).</p>}
+          {res.status === 'reweighted' && <p className="comp-note">No rating from {res.missing.map((g) => groupName(db, g)).join(', ')}, so the final rating uses the other groups ({res.basis}% of the weight).</p>}
         </div>
         <table className="comp-key">
           <thead><tr><th colSpan={2}>RATING INTERPRETATION</th></tr></thead>
@@ -181,7 +181,7 @@ export function VerbatimSheet({ db, period, res }) {
         const parts = tasks.map((x) => commentParts(x.response?.comment)).filter(Boolean);
         return (
           <section key={g}>
-            <h4>BY THE {byFor(res.type, g)} AS A {asA}</h4>
+            <h4>BY THE {byFor(res.type, g, db)} AS A {asA}</h4>
             <h5>EMPLOYEE'S PERSONAL AND PROFESSIONAL DEVELOPMENT PLAN:</h5>
             <List items={parts.map((p) => p.plan).filter(Boolean)} />
             <h5>AREAS TO BE IMPROVED BY THE EMPLOYEE:</h5>

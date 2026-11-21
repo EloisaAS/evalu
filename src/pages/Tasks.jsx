@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { takeScannedClass } from './ClassQr';
 import { useApp } from '../lib/store';
-import { GROUPS, taskStatus, userById, formForTask, periodById, itemCategory, ratingWords, MAX_RATING, targetType, hasPlanBoxes, commentParts, packComment } from '../lib/logic';
+import { taskStatus, userById, formForTask, periodById, itemCategory, ratingWords, MAX_RATING, targetType, hasPlanBoxes, commentParts, packComment, groupName } from '../lib/logic';
 import { Card, Badge, Avatar, Stat, Stats, Meter, Empty, Icon, dueText, pct } from '../ui';
 
 export default function Tasks() {
@@ -78,7 +78,7 @@ function TaskCard({ t, s, onOpen }) {
         <Avatar name={tg.name} size={42} />
         <div>
           <b>{tg.name}</b>
-          <div className="muted">{sec ? `${sec.code} · ${sec.subject}` : `as ${GROUPS[t.group]}`}</div>
+          <div className="muted">{sec ? `${sec.code} · ${sec.subject}` : `as ${groupName(db, t.group)}`}</div>
         </div>
       </div>
       <div className="task-meta">
@@ -148,7 +148,7 @@ function EvalForm({ taskId, onClose, onDone }) {
           <Avatar name={target.name} size={52} />
           <div>
             <h2>{target.name}</h2>
-            <div className="muted">{sec ? `${sec.code} · ${sec.subject} · ` : ''}You are evaluating as: {GROUPS[task.group]}</div>
+            <div className="muted">{sec ? `${sec.code} · ${sec.subject} · ` : ''}You are evaluating as: {groupName(db, task.group)}</div>
           </div>
         </div>
         <div className="meter-row"><span>{answered} of {ins.items.length} answered</span><Meter value={answered / ins.items.length} tone="brand" /></div>
@@ -185,7 +185,7 @@ function EvalForm({ taskId, onClose, onDone }) {
 
       <Card title={twoBoxes ? 'Development plan and areas to be improved (optional)' : 'Comments (optional)'}>
         <p className="muted">
-          Your comment is stored encrypted and shown word for word in this person's results, grouped with other comments from {GROUPS[task.group]}, <b>without your name</b>.
+          Your comment is stored encrypted and shown word for word in this person's results, grouped with other comments from {groupName(db, task.group)}, <b>without your name</b>.
           {task.group !== 'ST' && ' Because only one or two people evaluate in this group, the person may still guess who wrote it.'}
         </p>
         {twoBoxes ? <>

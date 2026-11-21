@@ -141,6 +141,8 @@ export const GROUPS = {
   NTPHEAD: 'Office Head',
   NTPSTAFF: 'Office Staff',
 };
+export const DEFAULT_EVALUATOR_GROUPS = Object.entries(GROUPS).map(([id, name]) => ({ id, name, builtIn: true, active: true }));
+export const groupName = (db, id) => db?.evaluatorGroups?.find((g) => g.id === id)?.name || GROUPS[id] || id;
 
 export const TARGET_TYPES = {
   COLLEGE_FACULTY: 'College faculty',
@@ -158,16 +160,22 @@ export const STAGE_LABEL = {
   faculty: 'Released to individual faculty',
 };
 
-/** Every evaluator group a person belongs to (a secretary evaluates the dean AND their office head). */
-export function evaluatorGroups(u) {
-  if (!u) return [];
-  if (u.role === 'ST') return ['ST'];
-  if (u.role === 'NTP') return { secretary: ['SEC', 'NTPSTAFF'], staff: ['NTPSTAFF'], head: ['NTPHEAD'] }[u.position] || [];
-  if (u.role === 'TP') {
-    const g = { dean: 'DEAN', chair: 'CHAIR', principal: 'PRIN', aprincipal: 'APRIN', shead: 'SHEAD', faculty: 'FAC' }[u.position];
+/** The built-in group memberships used by accounts created before HR-managed memberships existed. */
+export function defaultEvaluatorGroups(role, position) {
+  if (role === 'ST') return ['ST'];
+  if (role === 'NTP') return { secretary: ['SEC', 'NTPSTAFF'], staff: ['NTPSTAFF'], head: ['NTPHEAD'] }[position] || [];
+  if (role === 'TP') {
+    const g = { dean: 'DEAN', chair: 'CHAIR', principal: 'PRIN', aprincipal: 'APRIN', shead: 'SHEAD', faculty: 'FAC' }[position];
     return g ? [g] : [];
   }
   return [];
+}
+/** Every evaluation group assigned to a person; system account roles remain separate. */
+export function evaluatorGroups(u) {
+  if (!u) return [];
+  if (u.role === 'ST') return ['ST'];
+  if (Array.isArray(u.evaluatorGroupIds)) return [...new Set(u.evaluatorGroupIds)];
+  return defaultEvaluatorGroups(u.role, u.position);
 }
 export const evaluatorGroup = (u) => evaluatorGroups(u)[0] || null;
 
@@ -280,12 +288,12 @@ const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
 /** FR13: final ratings are rounded to two decimal places. */
 export const round2 = (x) => (x == null ? null : Math.round((x + Number.EPSILON) * 100) / 100);
 
-export function sectionStats(db, periodId, sectionId) {
+export function sectionStats(db, periodId, sectionId, participation = null) {
   const sec = db.sections.find((s) => s.id === sectionId);
   const tasks = db.tasks.filter((t) => t.periodId === periodId && t.sectionId === sectionId && t.group === 'ST');
   const required = tasks.length;
   const done = tasks.filter((t) => t.response);
-  const needed = neededResponses(required, policyFor(db, periodId));
+  const needed = neededResponses(required, { ...policyFor(db, periodId), ...(participation || {}) });
   const rate = required ? done.length / required : 0;
   const valid = required > 0 && done.length >= needed;
   const score = valid ? mean(done.map((t) => responseScore(t.response))) : null;
@@ -304,7 +312,7 @@ export function activeFormula(db, tt, dept) {
   return (dept && list.find((f) => f.dept === dept)) || list.find((f) => !f.dept) || null;
 }
 /** A formula record as the engine needs it (its rules plus its identity). */
-export const formulaSnapshot = (rec) => ({ ...rec.config, id: rec.id, version: rec.version, key: rec.key, dept: rec.dept || null });
+export const formulaSnapshot = (rec) => ({ ...rec.config, methodVersion: rec.config.methodVersion ?? 1, id: rec.id, version: rec.version, key: rec.key, dept: rec.dept || null });
 /**
  * The formula a period uses for a category: the version fixed in the period (NFR8), else the active one
  * (for previews outside a period), else the starting formula (the starting percentages saved at setup).
@@ -332,14 +340,19 @@ export function computeTarget(db, periodId, targetId, opts = {}) {
   const comps = f.components || [];
   const groups = {};
   const sections = [];
-  const m = methodOf(f.method);
+  const m = methodOf(f.method, f.methodVersion ?? 1);
+  const policy = policyFor(db, periodId);
+  const participation = {
+    participationPercent: f.participation?.percent ?? policy.participationPercent,
+    participationPlusOne: f.participation?.plusOne ?? policy.participationPlusOne,
+  };
   const shown = (c) => (m?.usesWeights ? c.weight : m?.equalShares ? +(100 / comps.length).toFixed(2) : null);
   for (const c of comps) {
     const g = c.group;
     const tasks = db.tasks.filter((t) => t.periodId === periodId && t.targetId === targetId && t.group === g);
     if (g === 'ST') {
       const secIds = [...new Set(tasks.map((t) => t.sectionId))];
-      const st = secIds.map((id) => sectionStats(db, periodId, id));
+      const st = secIds.map((id) => sectionStats(db, periodId, id, participation));
       sections.push(...st);
       const valid = st.filter((x) => x.valid);
       // aggregation: average of each class's average (UB practice), or all counted students together
@@ -359,7 +372,7 @@ export function computeTarget(db, periodId, targetId, opts = {}) {
   return {
     targetId, target, type: tt, groups, sections, final: r.final, status: r.status, missing: r.missing, missingW, basis: r.basis, total,
     // the whole formula version is kept with the result, so it can be recomputed exactly later
-    formula: { id: f.id || null, key: f.key || tt, name: f.name, version: f.version ?? 0, method: f.method, components: comps.map((c) => ({ group: c.group, weight: c.weight ?? null, aggregation: c.aggregation })), expression: f.expression || '', missing: f.missing, minGroups: f.minGroups ?? 1, rounding: f.rounding },
+    formula: { id: f.id || null, key: f.key || tt, name: f.name, version: f.version ?? 0, method: f.method, methodVersion: f.methodVersion ?? 1, components: comps.map((c) => ({ group: c.group, weight: c.weight ?? null, aggregation: c.aggregation, transform: c.transform || '' })), expression: f.expression || '', missing: f.missing, minGroups: f.minGroups ?? 1, participation: f.participation || null, effectiveFrom: f.effectiveFrom || '', effectiveUntil: f.effectiveUntil || '', rounding: f.rounding },
     breakdown: r.breakdown, steps: r.steps, how: r.how,
   };
 }
@@ -472,7 +485,15 @@ const fmtDate = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { m
 function participationNotices(draft, periodId, final) {
   const p = periodById(draft, periodId);
   const day = today();
-  const low = draft.sections.map((s) => sectionStats(draft, periodId, s.id)).filter((st) => st.required && !st.valid);
+  const low = draft.sections.map((s) => {
+    const target = userById(draft, s.facultyId);
+    const formula = formulaFor(draft, periodId, targetType(draft, target), target?.dept);
+    const participation = {
+      participationPercent: formula.participation?.percent ?? policyFor(draft, periodId).participationPercent,
+      participationPlusOne: formula.participation?.plusOne ?? policyFor(draft, periodId).participationPlusOne,
+    };
+    return sectionStats(draft, periodId, s.id, participation);
+  }).filter((st) => st.required && !st.valid);
   const kind = final ? 'invalidated' : 'participation';
   const tag = final ? `thr|${periodId}` : `part|${periodId}|${day}`;
   const line = (st) => `${st.section.code} (${st.section.subject}) – ${userById(draft, st.section.facultyId)?.name}: ${st.responded} of ${st.required} answered, ${st.needed} needed`;

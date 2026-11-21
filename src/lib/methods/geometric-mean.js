@@ -5,6 +5,7 @@ import { shares, num, dec } from './util.js';
 
 export default {
   id: 'GEOMETRIC_MEAN',
+  version: 1,
   label: 'Percentages, but a low rating counts more',
   help: 'If one group gives a low rating, the final rating goes down more (geometric mean).',
   advanced: true,

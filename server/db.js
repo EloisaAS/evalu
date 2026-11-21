@@ -18,10 +18,13 @@ sql.exec(`
 CREATE TABLE IF NOT EXISTS departments (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL            -- kind: college | basic
 );
+CREATE TABLE IF NOT EXISTS evaluator_groups (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, built_in INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1
+);
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
   role TEXT NOT NULL,                                                     -- ST | TP | NTP | HR | DIR
-  position TEXT, dept TEXT REFERENCES departments(id),
+  position TEXT, dept TEXT REFERENCES departments(id), evaluator_group_ids TEXT,
   email TEXT,                                                             -- official UB email (FR1), used to sign in
   password_hash TEXT NOT NULL,                                            -- scrypt, never sent to the browser
   active INTEGER NOT NULL DEFAULT 1,                                      -- 0 = deactivated by HR, cannot sign in
@@ -58,7 +61,7 @@ CREATE TABLE IF NOT EXISTS group_weights (                                -- e.g
   PRIMARY KEY (target_type, evaluator_group)
 );
 CREATE TABLE IF NOT EXISTS periods (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, deadline TEXT NOT NULL,
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, start_date TEXT, deadline TEXT NOT NULL,
   status TEXT NOT NULL,                                                   -- open | closed
   release_stage TEXT NOT NULL,                                            -- hr | dir | faculty
   threshold_checked INTEGER NOT NULL DEFAULT 0,
@@ -132,11 +135,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     for (const [name, def] of Object.entries(defs)) if (!cols.has(name)) sql.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${def}`);
   };
   addCols('users', { active: 'INTEGER NOT NULL DEFAULT 1', must_change_password: 'INTEGER NOT NULL DEFAULT 0', email: 'TEXT', temp_password: 'TEXT' }); // temp_password: encrypted, only until the person sets their own
+  addCols('users', { evaluator_group_ids: 'TEXT' });
   addCols('instrument_items', { category: 'TEXT' });
   addCols('criteria', { levels: 'TEXT' });        // JSON: own words for ratings 1..4 (e.g. "One program outreach" ... "More than three")
   addCols('sections', { class_type: 'TEXT' });    // lecture (NULL), lab, skills, clin-dent, clin-pt, clin-mt
   addCols('instruments', { variant: 'TEXT' });    // the type of class this form is for; NULL = standard
-  addCols('periods', { rules: 'TEXT', depts: 'TEXT', approvals: 'TEXT', last_auto: 'TEXT', policy: 'TEXT', rejections: 'TEXT', formulas: 'TEXT' }); // policy: the version in force for the period; rejections: VP returns with reasons
+  addCols('periods', { start_date: 'TEXT', rules: 'TEXT', depts: 'TEXT', approvals: 'TEXT', last_auto: 'TEXT', policy: 'TEXT', rejections: 'TEXT', formulas: 'TEXT' }); // policy: the version in force for the period; rejections: VP returns with reasons
   addCols('responses', { instrument_id: 'TEXT' });
   addCols('audit_log', { prev_hash: 'TEXT', hash: 'TEXT' }); // tamper-evident chain (see addAudit)
   // Forms used to allow only one per pairing (UNIQUE). Versions need several, so rebuild that table once.
@@ -158,14 +162,15 @@ CREATE TABLE IF NOT EXISTS sessions (
 // Listed parent-first. Rows are kept in insertion order (rowid), like the old arrays.
 const TABLES = [
   { name: 'departments', key: ['id'], rows: (db) => db.departments.map((d) => ({ id: d.id, name: d.name, kind: d.kind })) },
-  { name: 'users', key: ['id'], rows: (db) => db.users.map((u) => ({ id: u.id, username: u.username, name: u.name, role: u.role, position: u.position ?? null, dept: u.dept ?? null, email: u.email ?? null, password_hash: u.passwordHash, active: u.active === false ? 0 : 1, must_change_password: u.mustChangePassword ? 1 : 0, temp_password: u.tempPassword ? JSON.stringify(u.tempPassword) : null })) },
+  { name: 'evaluator_groups', key: ['id'], rows: (db) => (db.evaluatorGroups || []).map((g) => ({ id: g.id, name: g.name, built_in: g.builtIn ? 1 : 0, active: g.active === false ? 0 : 1 })) },
+  { name: 'users', key: ['id'], rows: (db) => db.users.map((u) => ({ id: u.id, username: u.username, name: u.name, role: u.role, position: u.position ?? null, dept: u.dept ?? null, evaluator_group_ids: Array.isArray(u.evaluatorGroupIds) ? JSON.stringify(u.evaluatorGroupIds) : null, email: u.email ?? null, password_hash: u.passwordHash, active: u.active === false ? 0 : 1, must_change_password: u.mustChangePassword ? 1 : 0, temp_password: u.tempPassword ? JSON.stringify(u.tempPassword) : null })) },
   { name: 'sections', key: ['id'], rows: (db) => db.sections.map((s) => ({ id: s.id, code: s.code, subject: s.subject, faculty_id: s.facultyId, dept: s.dept, class_type: s.classType || null })) },
   { name: 'section_students', key: ['section_id', 'student_id'], rows: (db) => db.sections.flatMap((s) => s.studentIds.map((st) => ({ section_id: s.id, student_id: st }))) },
   { name: 'criteria', key: ['id'], rows: (db) => db.criteria.map((c) => ({ id: c.id, text: c.text, levels: c.levels?.length ? JSON.stringify(c.levels) : null })) },
   { name: 'instruments', key: ['id'], rows: (db) => db.instruments.map((i) => ({ id: i.id, name: i.name, target_type: i.targetType, evaluator_group: i.group, dept: i.dept ?? null, version: i.version ?? 1, active: i.active === false ? 0 : 1, categories: i.categories && Object.keys(i.categories).length ? JSON.stringify(i.categories) : null, variant: i.variant || null })) },
   { name: 'instrument_items', key: ['instrument_id', 'criterion_id'], rows: (db) => db.instruments.flatMap((i) => i.items.map((it) => ({ instrument_id: i.id, criterion_id: it.criterionId, weight: it.weight, category: it.category || null }))) },
   { name: 'group_weights', key: ['target_type', 'evaluator_group'], rows: (db) => Object.entries(db.rules).flatMap(([tt, r]) => Object.entries(r).map(([g, w]) => ({ target_type: tt, evaluator_group: g, weight: w }))) },
-  { name: 'periods', key: ['id'], rows: (db) => db.periods.map((p) => ({ id: p.id, name: p.name, deadline: p.deadline, status: p.status, release_stage: p.releaseStage, threshold_checked: p.thresholdChecked ? 1 : 0, rules: p.rules ? JSON.stringify(p.rules) : null, depts: p.depts?.length ? JSON.stringify(p.depts) : null, approvals: p.approvals?.length ? JSON.stringify(p.approvals) : null, last_auto: p.lastAuto ?? null, policy: p.policy ? JSON.stringify(p.policy) : null, rejections: p.rejections?.length ? JSON.stringify(p.rejections) : null, formulas: p.formulas && Object.keys(p.formulas).length ? JSON.stringify(p.formulas) : null })) },
+  { name: 'periods', key: ['id'], rows: (db) => db.periods.map((p) => ({ id: p.id, name: p.name, start_date: p.startDate ?? null, deadline: p.deadline, status: p.status, release_stage: p.releaseStage, threshold_checked: p.thresholdChecked ? 1 : 0, rules: p.rules ? JSON.stringify(p.rules) : null, depts: p.depts?.length ? JSON.stringify(p.depts) : null, approvals: p.approvals?.length ? JSON.stringify(p.approvals) : null, last_auto: p.lastAuto ?? null, policy: p.policy ? JSON.stringify(p.policy) : null, rejections: p.rejections?.length ? JSON.stringify(p.rejections) : null, formulas: p.formulas && Object.keys(p.formulas).length ? JSON.stringify(p.formulas) : null })) },
   { name: 'formulas', key: ['id'], rows: (db) => (db.formulas || []).map((f) => ({ id: f.id, key: f.key, target_type: f.targetType, dept: f.dept ?? null, version: f.version, status: f.status, config: JSON.stringify(f.config), meta: JSON.stringify(f.meta || {}) })) },
   { name: 'tasks', key: ['id'], rows: (db) => db.tasks.map((t) => ({ id: t.id, period_id: t.periodId, evaluator_id: t.evaluatorId, target_id: t.targetId, evaluator_group: t.group, section_id: t.sectionId, draft: t.draft ? JSON.stringify(t.draft) : null })) },
   { name: 'results', key: ['period_id', 'target_id'], rows: (db) => (db.results || []).map((r) => ({ period_id: r.periodId, target_id: r.targetId, data: JSON.stringify(r.data) })) },
@@ -182,9 +187,11 @@ const all = (q, ...a) => sql.prepare(q).all(...a);
 function readFromTables() {
   const db = { version: 1 };
   db.departments = all('SELECT id, name, kind FROM departments ORDER BY rowid');
+  db.evaluatorGroups = all('SELECT id, name, built_in, active FROM evaluator_groups ORDER BY rowid').map((g) => ({ id: g.id, name: g.name, builtIn: !!g.built_in, active: !!g.active }));
   // password hashes stay on the server: view.js never sends them to the browser
   db.users = all('SELECT * FROM users ORDER BY rowid').map((u) => ({
     id: u.id, username: u.username, email: u.email, name: u.name, role: u.role, position: u.position, dept: u.dept,
+    evaluatorGroupIds: u.evaluator_group_ids ? JSON.parse(u.evaluator_group_ids) : undefined,
     passwordHash: u.password_hash, active: !!u.active, mustChangePassword: !!u.must_change_password, tempPassword: u.temp_password ? JSON.parse(u.temp_password) : null,
   }));
   const enrolled = {};
@@ -199,7 +206,7 @@ function readFromTables() {
   }));
   db.rules = {};
   for (const r of all('SELECT * FROM group_weights ORDER BY rowid')) (db.rules[r.target_type] ||= {})[r.evaluator_group] = r.weight;
-  db.periods = all('SELECT * FROM periods ORDER BY rowid').map((p) => ({ id: p.id, name: p.name, deadline: p.deadline, status: p.status, releaseStage: p.release_stage, thresholdChecked: !!p.threshold_checked,
+  db.periods = all('SELECT * FROM periods ORDER BY rowid').map((p) => ({ id: p.id, name: p.name, startDate: p.start_date, deadline: p.deadline, status: p.status, releaseStage: p.release_stage, thresholdChecked: !!p.threshold_checked,
     rules: p.rules ? JSON.parse(p.rules) : null, depts: p.depts ? JSON.parse(p.depts) : null, approvals: p.approvals ? JSON.parse(p.approvals) : [], lastAuto: p.last_auto,
     policy: p.policy ? JSON.parse(p.policy) : null, rejections: p.rejections ? JSON.parse(p.rejections) : [], formulas: p.formulas ? JSON.parse(p.formulas) : null,
   }));
@@ -278,16 +285,18 @@ export function save(next) {
 export function replaceAll(db) {
   const users = db.users;
   inTransaction(() => {
-    for (const t of ['results', 'answers', 'responses', 'result_requests', 'past_results', 'tasks', 'notifications', 'policies', 'periods', 'group_weights', 'instrument_items', 'instruments', 'criteria', 'section_students', 'sections']) sql.exec(`DELETE FROM ${t}`);
+    for (const t of ['results', 'answers', 'responses', 'result_requests', 'past_results', 'tasks', 'notifications', 'policies', 'periods', 'group_weights', 'instrument_items', 'instruments', 'criteria', 'section_students', 'sections', 'evaluator_groups']) sql.exec(`DELETE FROM ${t}`);
     // keep sessions of users that still exist; replace user rows in place
     // free every username first, so a seed username can't clash with an account HR created
     sql.exec("UPDATE users SET username = '~' || id, email = NULL");
-    const ins = sql.prepare(`INSERT INTO users (id, username, email, name, role, position, dept, password_hash, active, must_change_password) VALUES (?,?,?,?,?,?,?,?,?,?)
+    const ins = sql.prepare(`INSERT INTO users (id, username, email, name, role, position, dept, evaluator_group_ids, password_hash, active, must_change_password) VALUES (?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET username=excluded.username, email=excluded.email, name=excluded.name, role=excluded.role, position=excluded.position, dept=excluded.dept,
-        password_hash=excluded.password_hash, active=excluded.active, must_change_password=excluded.must_change_password`);
+        evaluator_group_ids=excluded.evaluator_group_ids, password_hash=excluded.password_hash, active=excluded.active, must_change_password=excluded.must_change_password`);
     const insDept = sql.prepare('INSERT INTO departments (id, name, kind) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind');
+    const insEvaluatorGroup = sql.prepare('INSERT INTO evaluator_groups (id, name, built_in, active) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, built_in=excluded.built_in, active=excluded.active');
     for (const d of db.departments) insDept.run(d.id, d.name, d.kind);
-    for (const u of users) ins.run(u.id, u.username, u.email ?? null, u.name, u.role, u.position ?? null, u.dept ?? null, u.passwordHash, u.active === false ? 0 : 1, u.mustChangePassword ? 1 : 0);
+    for (const g of db.evaluatorGroups || []) insEvaluatorGroup.run(g.id, g.name, g.builtIn ? 1 : 0, g.active === false ? 0 : 1);
+    for (const u of users) ins.run(u.id, u.username, u.email ?? null, u.name, u.role, u.position ?? null, u.dept ?? null, Array.isArray(u.evaluatorGroupIds) ? JSON.stringify(u.evaluatorGroupIds) : null, u.passwordHash, u.active === false ? 0 : 1, u.mustChangePassword ? 1 : 0);
     const keep = new Set(users.map((u) => u.id));
     for (const { id } of all('SELECT id FROM users')) if (!keep.has(id)) sql.prepare('DELETE FROM users WHERE id=?').run(id); // sessions cascade
   });

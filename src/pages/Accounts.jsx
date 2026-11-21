@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '../lib/store';
-import { ROLES, POSITIONS, needsDept, deptName, missingUbDepartments, isNursingDept, nursingDepts } from '../lib/logic';
+import { ROLES, POSITIONS, TARGET_TYPES, needsDept, deptName, missingUbDepartments, isNursingDept, nursingDepts, evaluatorGroups, defaultEvaluatorGroups, groupName } from '../lib/logic';
 import { Card, Select, Badge, Avatar, Empty, SaveInput, newestFirst, usePages, ask } from '../ui';
 
 /* ---------------- change your own password ---------------- */
@@ -80,13 +80,16 @@ export function MyAccount() {
 }
 
 /* ---------------- HR: accounts ---------------- */
-const EMPTY = { name: '', username: '', email: '', role: 'ST', position: 'student', dept: '', sectionIds: [] };
+const EMPTY = { name: '', username: '', email: '', role: 'ST', position: 'student', dept: '', sectionIds: [], evaluatorGroupIds: [] };
 
 function AccountForm({ initial, onSave, onCancel, saveLabel }) {
   const { db } = useApp();
   const [f, setF] = useState(initial);
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
-  const setRole = (role) => setF((x) => ({ ...x, role, position: Object.keys(POSITIONS[role])[0], dept: needsDept(role) ? x.dept : '', sectionIds: role === 'ST' ? x.sectionIds : [] }));
+  const setRole = (role) => {
+    const position = Object.keys(POSITIONS[role])[0];
+    setF((x) => ({ ...x, role, position, dept: needsDept(role) ? x.dept : '', sectionIds: role === 'ST' ? x.sectionIds : [], evaluatorGroupIds: defaultEvaluatorGroups(role, position) }));
+  };
   const classes = db.sections.filter((s) => s.dept === f.dept);
   // Clinical Instructors are only in the School of Nursing
   const chosenDept = db.departments.find((d) => d.id === f.dept);
@@ -94,9 +97,14 @@ function AccountForm({ initial, onSave, onCancel, saveLabel }) {
   const deptChoices = f.position === 'ci' ? nursingDepts(db) : db.departments;
   const setPosition = (v) => setF((x) => {
     const keep = v !== 'ci' || isNursingDept(db.departments.find((d) => d.id === x.dept));
-    return { ...x, position: v, dept: keep ? x.dept : (nursingDepts(db)[0]?.id || ''), sectionIds: keep ? x.sectionIds : [] };
+    const currentDefaults = defaultEvaluatorGroups(x.role, x.position);
+    const additional = (x.evaluatorGroupIds || []).filter((id) => !currentDefaults.includes(id));
+    const evaluatorGroupIds = [...new Set([...defaultEvaluatorGroups(x.role, v), ...additional])];
+    return { ...x, position: v, dept: keep ? x.dept : (nursingDepts(db)[0]?.id || ''), sectionIds: keep ? x.sectionIds : [], evaluatorGroupIds };
   });
   const toggle = (id) => set('sectionIds', f.sectionIds.includes(id) ? f.sectionIds.filter((x) => x !== id) : [...f.sectionIds, id]);
+  const toggleEvaluatorGroup = (id) => set('evaluatorGroupIds', (f.evaluatorGroupIds || []).includes(id) ? f.evaluatorGroupIds.filter((x) => x !== id) : [...(f.evaluatorGroupIds || []), id]);
+  const groups = (db.evaluatorGroups || []).filter((g) => g.active !== false && g.id !== 'ST');
   return (
     <div className="acc-form">
       <div className="row">
@@ -119,6 +127,13 @@ function AccountForm({ initial, onSave, onCancel, saveLabel }) {
       </div>
       {f.position === 'ci' && <p className="muted">Clinical Instructors are only in the School of Nursing, so only Nursing students evaluate them.</p>}
       {f.position === 'ci' && !nursingDepts(db).length && <div className="note warn">Add the School of Nursing under Departments first.</div>}
+      {['TP', 'NTP'].includes(f.role) && (
+        <div className="row">
+          <span className="muted">Evaluation role(s):</span>
+          {groups.map((g) => <label key={g.id} className="inline"><input type="checkbox" checked={(f.evaluatorGroupIds || []).includes(g.id)} onChange={() => toggleEvaluatorGroup(g.id)} /> {g.name}</label>)}
+          {!groups.length && <span className="muted">No evaluator groups are configured yet.</span>}
+        </div>
+      )}
       {f.role === 'ST' && f.dept && (
         <div className="row">
           <span className="muted">Classes:</span>
@@ -199,7 +214,49 @@ function Departments() {
           ))}</tbody>
         </table>
       )}
-      <p className="muted">Click a name to rename it. The type decides the weights for teachers: College (Students 40, Dean 40, Program Chair 20) or Basic Education (Students 40, Principal 20, Assistant Principal 20, Subject Head 20).</p>
+      <p className="muted">Click a name to rename it. Department type supplies the starting evaluator groups and weights; HR can configure the approved scoring under Scoring &amp; calculation.</p>
+    </Card>
+  );
+}
+
+function EvaluatorGroups() {
+  const { db, act } = useApp();
+  const [name, setName] = useState('');
+  const [targetTypes, setTargetTypes] = useState([]);
+  const [msg, setMsg] = useState('');
+  const toggle = (id) => setTargetTypes((xs) => xs.includes(id) ? xs.filter((x) => x !== id) : [...xs, id]);
+  const add = async () => {
+    setMsg('');
+    if (!name.trim()) return setMsg('Enter a name for the evaluator group.');
+    if (!targetTypes.length) return setMsg('Choose at least one evaluated category.');
+    const result = await act('addEvaluatorGroup', { name, targetTypes });
+    if (result) { setMsg(`${result.name} added. Assign staff to this group under Accounts, then create its evaluation form under Forms.`); setName(''); setTargetTypes([]); }
+  };
+  const targetsFor = (id) => Object.keys(db.rules).filter((tt) => Object.hasOwn(db.rules[tt], id));
+  const membersFor = (id) => db.users.filter((u) => evaluatorGroups(u).includes(id)).length;
+  return (
+    <Card title="Evaluator groups and roles">
+      <p className="muted">Add an evaluation role (for example, Department Head) without changing the app. Then assign staff to it in their account and create a form for each selected evaluatee category. System access roles such as HR and VP remain fixed.</p>
+      <table>
+        <thead><tr><th>Evaluator group</th><th>Evaluates</th><th>Assigned accounts</th><th>Type</th></tr></thead>
+        <tbody>{(db.evaluatorGroups || []).map((g) => (
+          <tr key={g.id}>
+            <td><b>{groupName(db, g.id)}</b><div className="muted small">{g.id}</div></td>
+            <td>{targetsFor(g.id).map((tt) => TARGET_TYPES[tt]).join(', ') || '—'}</td>
+            <td>{membersFor(g.id)}</td>
+            <td>{g.builtIn ? 'Built in' : 'HR configured'}</td>
+          </tr>
+        ))}</tbody>
+      </table>
+      <div className="row">
+        <input className="wide" placeholder="New evaluator role, e.g. Department Head" value={name} onChange={(e) => setName(e.target.value)} />
+        <button onClick={add}>Add evaluator group</button>
+      </div>
+      <div className="row">
+        <span className="muted">This group evaluates:</span>
+        {Object.entries(TARGET_TYPES).map(([id, label]) => <label key={id} className="inline"><input type="checkbox" checked={targetTypes.includes(id)} onChange={() => toggle(id)} /> {label}</label>)}
+      </div>
+      {msg && <div className="note">{msg}</div>}
     </Card>
   );
 }
@@ -248,6 +305,7 @@ export function Accounts() {
         <b>Most student and teacher accounts are created when you import a class list.</b> Use this page for one person at a time, or to update a name, reset a password, or manage departments. New accounts get a temporary password that must be changed at first sign-in.
       </div>
       <Departments />
+      <EvaluatorGroups />
 
       {temp && <TempPasswordNote info={temp} onClose={() => setTemp(null)} />}
       {msg && <div className="note">{msg}</div>}
@@ -271,7 +329,7 @@ export function Accounts() {
           <tbody>
             {rows.map((u) => editing === u.id ? (
               <tr key={u.id}><td colSpan={6}>
-                <AccountForm initial={{ name: u.name, username: u.username, email: u.email || '', role: u.role, position: u.position, dept: u.dept || '', sectionIds: enrolled(u.id) }}
+                <AccountForm initial={{ name: u.name, username: u.username, email: u.email || '', role: u.role, position: u.position, dept: u.dept || '', sectionIds: enrolled(u.id), evaluatorGroupIds: u.evaluatorGroupIds || evaluatorGroups(u) }}
                   onSave={update} onCancel={() => setEditing(null)} saveLabel="Save changes" />
               </td></tr>
             ) : (

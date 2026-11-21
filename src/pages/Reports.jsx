@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../lib/store';
 import { analyzeComment, summarizeComments, SENTIMENT_LABEL, TOPICS } from '../lib/comments';
 import {
-  GROUPS, TARGET_TYPES, computeAll, computeTarget, canSeeAll, canSeeComments, canSeeDept, deptName, userById, sectionStats,
+  TARGET_TYPES, computeAll, computeTarget, canSeeAll, canSeeComments, canSeeDept, deptName, groupName, userById, sectionStats,
   itemStats, formOfTask, itemCategory, hasFinal, pendingApprovals, policyFor, approvalRuleText, formulaWords, howInWords, isEvaluatee, stageAtLeast, targetsOf, commentParts, targetType,
 } from '../lib/logic';
 import { Card, Badge, RuleNote, PeriodPicker, Select, Meter, Stat, Stats, Empty, Avatar, ItemTable, PrintButton, fmt, pct, newestFirst, usePages, ask } from '../ui';
@@ -56,7 +56,7 @@ export function CommentSummary({ comments }) {
 }
 
 /** FR14: verbatim comments grouped by source (Students, Dean, Program Chair…), never with a name. */
-export function CommentsBySource({ tasks }) {
+export function CommentsBySource({ tasks, db }) {
   const by = {};
   let hidden = 0;
   for (const t of tasks) {
@@ -69,7 +69,7 @@ export function CommentsBySource({ tasks }) {
       <h4>Comments (verbatim)</h4>
       <CommentSummary comments={Object.values(by).flat()} />
       {Object.entries(by).map(([g, list]) => (
-        <div key={g}><b>From {GROUPS[g]}</b><ul>{list.map((c, i) => <li key={i}><CommentText c={c} /> <CommentTags c={c} /></li>)}</ul></div>
+        <div key={g}><b>From {groupName(db, g)}</b><ul>{list.map((c, i) => <li key={i}><CommentText c={c} /> <CommentTags c={c} /></li>)}</ul></div>
       ))}
       {hidden > 0 && <p className="muted">{hidden} student comment(s) are hidden because too few students answered (see Policy &amp; rules).</p>}
       <p className="muted">Comments are shown exactly as written. The names of students are never shown.</p>
@@ -80,8 +80,8 @@ export function CommentsBySource({ tasks }) {
 /** FR15: final breakdown + per-subject, dean and program chair reports with per-item rating distributions. */
 /** How a final rating was computed: the formula version, each group's share and contribution, and the steps. */
 /** One plain sentence about a missing group, e.g. "Program Chair has no rating yet, so only Students and Dean were used." */
-function missingSentence(res) {
-  const list = (gs) => gs.map((g) => GROUPS[g]).join(gs.length > 2 ? ', ' : ' and ');
+function missingSentence(res, db) {
+  const list = (gs) => gs.map((g) => groupName(db, g)).join(gs.length > 2 ? ', ' : ' and ');
   const miss = list(res.missing || []);
   const rest = list(Object.keys(res.groups).filter((g) => !res.missing.includes(g)));
   const rule = res.formula?.missing || 'REWEIGHT';
@@ -90,7 +90,7 @@ function missingSentence(res) {
   return `${miss} has no rating yet, so only ${rest} ${res.missing.length === Object.keys(res.groups).length - 1 ? 'was' : 'were'} used.`;
 }
 
-export function Computation({ res }) {
+export function Computation({ res, db }) {
   const f = res.formula || {};
   // results stored before the whole formula was kept: rebuild the sentence from the breakdown
   const shownF = f.components ? f : { method: f.method, components: res.breakdown?.map((b) => ({ group: b.group, weight: b.weight })) || [], expression: '' };
@@ -98,17 +98,17 @@ export function Computation({ res }) {
   return (
     <details className="source computation">
       <summary>How this rating was computed</summary>
-      <p><b>{formulaWords(shownF, GROUPS)}</b></p>
+      <p><b>{formulaWords(shownF, Object.fromEntries((db.evaluatorGroups || []).map((g) => [g.id, g.name])))}</b></p>
       {res.breakdown?.length > 0 && f.method !== 'CUSTOM' && (
         <table>
           <thead><tr><th>Group</th><th>Rating</th><th>Counts for</th>{points && <th>Points</th>}</tr></thead>
-          <tbody>{res.breakdown.map((b) => <tr key={b.group}><td>{GROUPS[b.group]}</td><td>{b.score == null ? <span className="muted">no rating</span> : b.score.toFixed(2)}</td><td>{b.share ? `${+(b.share * 100).toFixed(1)}%` : '—'}</td>{points && <td>{b.share && b.contribution != null ? b.contribution.toFixed(2) : '—'}</td>}</tr>)}
+          <tbody>{res.breakdown.map((b) => <tr key={b.group}><td>{groupName(db, b.group)}</td><td>{b.score == null ? <span className="muted">no rating</span> : b.score.toFixed(2)}</td><td>{b.share ? `${+(b.share * 100).toFixed(1)}%` : '—'}</td>{points && <td>{b.share && b.contribution != null ? b.contribution.toFixed(2) : '—'}</td>}</tr>)}
             {points
               ? <tr className="cat-total"><td>Final rating</td><td /><td /><td><b>{res.final == null ? '—' : res.final.toFixed(2)}</b></td></tr>
               : <tr className="cat-total"><td>Final rating</td><td><b>{res.final == null ? '—' : res.final.toFixed(2)}</b></td><td /></tr>}</tbody>
         </table>
       )}
-      <p className="small muted">{howInWords(res)}{res.missing?.length > 0 && res.final != null ? ` · ${missingSentence(res)}` : ''} · {f.name}{f.version ? `, version ${f.version}` : ''}</p>
+      <p className="small muted">{howInWords(res)}{res.missing?.length > 0 && res.final != null ? ` · ${missingSentence(res, db)}` : ''} · {f.name}{f.version ? `, version ${f.version}` : ''}</p>
     </details>
   );
 }
@@ -131,19 +131,19 @@ export function ResultCard({ res, db, periodId, own = false }) {
           <span className="muted">{res.status === 'complete' ? 'final score / 4' : res.status === 'reweighted' ? `final score / 4 · over ${res.basis}%` : STATUS_TEXT[res.status]}</span>
         </div>
       </div>
-      {res.status === 'reweighted' && <div className="note">{missingSentence(res)}</div>}
+      {res.status === 'reweighted' && <div className="note">{missingSentence(res, db)}</div>}
       {res.status === 'incomplete' && <div className="note warn">No final score yet: {res.steps?.[0] || 'none of the evaluator groups has a valid result yet.'}</div>}
-      {res.status === 'weights-missing' && <div className="note warn">No final score yet. HR has not set the weight for: {res.missingW.map((g) => GROUPS[g]).join(', ')}.</div>}
+      {res.status === 'weights-missing' && <div className="note warn">No final score yet. HR has not set the weight for: {res.missingW.map((g) => groupName(db, g)).join(', ')}.</div>}
       <div className="group-rows">
         {Object.entries(res.groups).map(([g, v]) => (
           <div key={g} className="meter-row big">
-            <span><b>{GROUPS[g]}</b> <span className="muted">{v.weight == null ? (res.formula?.method === 'CUSTOM' ? 'in the custom formula' : 'weight not set') : `counts ${v.weight}%`} · {v.responded}/{v.required} responses</span></span>
+            <span><b>{groupName(db, g)}</b> <span className="muted">{v.weight == null ? (res.formula?.method === 'CUSTOM' ? 'in the custom formula' : 'weight not set') : `counts ${v.weight}%`} · {v.responded}/{v.required} responses</span></span>
             <Meter value={v.score == null ? 0 : v.score / 4} tone="brand" />
             <b>{fmt(v.score)}</b>
           </div>
         ))}
       </div>
-      <Computation res={res} />
+      <Computation res={res} db={db} />
       {res.sections.length > 0 && (
         <table>
           <thead><tr><th>Class</th><th>Students answered</th><th>Result</th><th>Score</th></tr></thead>
@@ -171,13 +171,13 @@ export function ResultCard({ res, db, periodId, own = false }) {
           const ts = groupTasks(g);
           if (!ts.some((t) => t.response)) return null;
           return (
-            <details key={g}><summary>Results per question · {GROUPS[g]} <span className="muted">({ts.filter((t) => t.response).length} evaluation{ts.filter((t) => t.response).length > 1 ? 's' : ''})</span></summary>
+            <details key={g}><summary>Results per question · {groupName(db, g)} <span className="muted">({ts.filter((t) => t.response).length} evaluation{ts.filter((t) => t.response).length > 1 ? 's' : ''})</span></summary>
               <ItemTable rows={itemStats(ts, policyFor(db, periodId).lowItem)} criteria={db.criteria} categoryOf={categoryLookup(db, ts)} />
             </details>
           );
         })}
       </div>
-      <CommentsBySource tasks={tasks} />
+      <CommentsBySource tasks={tasks} db={db} />
     </div>
   );
 }
@@ -205,7 +205,7 @@ export function DeptSummary({ db, periodId, dept }) {
         const ts = counted.filter((t) => t.group === g);
         return (
           <div key={g}>
-            <h4>{GROUPS[g]} <span className="muted">· {ts.filter((t) => t.response).length} respondents</span></h4>
+            <h4>{groupName(db, g)} <span className="muted">· {ts.filter((t) => t.response).length} respondents</span></h4>
             <ItemTable rows={itemStats(ts, policyFor(db, periodId).lowItem)} criteria={db.criteria} categoryOf={categoryLookup(db, ts)} />
           </div>
         );
@@ -326,7 +326,7 @@ function Comments({ periodId }) {
       <thead><tr><th>Evaluated</th><th>From</th><th>Comment (verbatim)</th><th>Tags</th></tr></thead>
       <tbody>
         {rows.map((t) => (
-          <tr key={t.id}><td>{userById(db, t.targetId).name}</td><td>{GROUPS[t.group]}</td><td><CommentText c={t.response.comment} /></td><td><CommentTags c={t.response.comment} /></td></tr>
+          <tr key={t.id}><td>{userById(db, t.targetId).name}</td><td>{groupName(db, t.group)}</td><td><CommentText c={t.response.comment} /></td><td><CommentTags c={t.response.comment} /></td></tr>
         ))}
       </tbody>
     </table>
@@ -347,7 +347,7 @@ function FormalPrint({ tab, db, pid, period, all, secRows, bySubject, dept, sele
   const ratingWord = (x, ntp = false) => rw(x, ntp, pol);
   const SummarySheet = (props) => <Sheet policy={pol} {...props} />;
   const ntpOf = (r) => String(r.type).startsWith('NTP');
-  const remark = (r) => (r.status === 'complete' ? 'Complete' : r.status === 'reweighted' ? `Without ${(r.missing || []).map((g) => GROUPS[g]).join(', ') || 'one group'}` : STATUS_TEXT[r.status]);
+  const remark = (r) => (r.status === 'complete' ? 'Complete' : r.status === 'reweighted' ? `Without ${(r.missing || []).map((g) => groupName(db, g)).join(', ') || 'one group'}` : STATUS_TEXT[r.status]);
   let sheet = null;
   if (tab === 'overall') {
     sheet = <SummarySheet title="Evaluation Summary of Personnel" period={period}
@@ -390,13 +390,13 @@ function FormalPrint({ tab, db, pid, period, all, secRows, bySubject, dept, sele
         if (catOf && c !== last) { rows.push({ cat: `${ROMAN_N[ci] || ci + 1}. ${c}` }); ci++; last = c; n = 0; }
         rows.push([`${++n}. ${db.criteria.find((q) => q.id === x.criterionId)?.text || x.criterionId}`, twoDp(x.mean), x.n]);
       }
-      return { heading: `By the ${GROUPS[g]} · rating the ${kinds} · ${ts.length} respondent${ts.length === 1 ? '' : 's'}`, columns: ['Question', 'Average', 'Answers'], rows, num: false };
+      return { heading: `By the ${groupName(db, g)} · rating the ${kinds} · ${ts.length} respondent${ts.length === 1 ? '' : 's'}`, columns: ['Question', 'Average', 'Answers'], rows, num: false };
     });
     sheet = <SummarySheet title="Department Evaluation Summary" period={period}
       info={[['Department', deptName(db, dept)], ['Personnel evaluated', results.length], ['Total respondents', counted.filter((t) => t.response).length], ['Average final rating', `${twoDp(avg)} ${avg == null ? '' : `(${ratingWord(avg)})`}`]]}
       sections={[{ heading: 'Personnel', columns: ['Name', 'Final rating', 'Interpretation', 'Remarks'], rows: results.map((r) => [r.target.name.toUpperCase(), twoDp(r.final), ratingWord(r.final, ntpOf(r)), remark(r)]) }, ...groupSections]} />;
   } else if (tab === 'comments') {
-    const rows = db.tasks.filter((t) => t.periodId === pid && t.response?.comment).map((t) => [userById(db, t.targetId)?.name.toUpperCase(), GROUPS[t.group], commentWords(t.response.comment)]);
+    const rows = db.tasks.filter((t) => t.periodId === pid && t.response?.comment).map((t) => [userById(db, t.targetId)?.name.toUpperCase(), groupName(db, t.group), commentWords(t.response.comment)]);
     sheet = <SummarySheet title="Evaluation Comments (Verbatim)" period={period} showKey={false}
       info={[['Note', 'Comments are printed word for word, without the names of the evaluators']]}
       sections={[{ columns: ['Evaluated', 'From', 'Comment'], rows }]} />;

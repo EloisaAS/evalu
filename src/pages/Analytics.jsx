@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, BarChart, Bar, Legend } from 'recharts';
 import { useApp } from '../lib/store';
 import {
-  computeAll, canSeeAll, hasFinal, itemStats, sectionStats, targetsOf, GROUPS, policyFor, TARGET_TYPES, deptName,
+  computeAll, canSeeAll, hasFinal, itemStats, sectionStats, targetsOf, policyFor, TARGET_TYPES, deptName, groupName,
   formOfTask, itemCategory, interpretation, commentParts,
 } from '../lib/logic';
 import { Card, PeriodPicker, Select, Badge, fmt, pct } from '../ui';
@@ -215,7 +215,7 @@ export default function Analytics() {
   const excluded = participation.reduce((a, p) => a + p.excluded, 0), classes = participation.reduce((a, p) => a + p.classes, 0);
   const lowPart = [...participation].filter((p) => p.rate != null).sort((a, b) => a.rate - b.rate)[0];
   if (classes) findings.push({ text: `${excluded} of ${classes} classes were excluded for low participation${lowPart ? `; the lowest response rate is ${lowPart.department} (${pct(lowPart.rate)})` : ''}.`, action: excluded ? 'Send reminders earlier next period, or ask advisers to give class time for the evaluation.' : 'Participation was enough in every class.', from: 'Participation' });
-  if (cats.length) findings.push({ text: `Weakest category: "${cats[0].category}" (${GROUPS[cats[0].group]}, average ${fmt(cats[0].mean)}).`, action: 'A possible topic for training or an in-service seminar (INSET).', from: 'Strengths and weaknesses' });
+  if (cats.length) findings.push({ text: `Weakest category: "${cats[0].category}" (${groupName(db, cats[0].group)}, average ${fmt(cats[0].mean)}).`, action: 'A possible topic for training or an in-service seminar (INSET).', from: 'Strengths and weaknesses' });
   const consistent = items.filter((i) => i.consistent);
   if (consistent.length) findings.push({ text: `${consistent.length} question(s) were low in this period and the one before, e.g. "${text(consistent[0].criterionId)}".`, action: 'Low twice in a row suggests a lasting need rather than a one-time result.', from: 'Item-level results' });
   const worstTopic = [...csum.topics].filter((x) => x.negative).sort((a, b) => b.negative - a.negative)[0];
@@ -295,7 +295,7 @@ export default function Analytics() {
         <p className="muted">Average answer per form category, lowest first ({dept === 'ALL' ? 'all departments' : deptName(db, dept)}, {period?.name}). Categories below {pol.lowItem.toFixed(2)} are flagged.</p>
         {cats.length === 0 ? <p className="muted">No answers for this selection.</p> : (
           <table><thead><tr><th>Category</th><th>Evaluator group</th><th>Average</th><th>Answers</th><th>People rated</th><th /></tr></thead>
-            <tbody>{(allCats ? cats : cats.slice(0, 12)).map((c) => <tr key={c.group + c.category} className={c.mean < pol.lowItem ? 'low' : ''}><td>{c.category}</td><td>{GROUPS[c.group]}</td><td><b>{fmt(c.mean)}</b></td><td>{c.n}</td><td>{c.people}</td><td>{c.mean < pol.lowItem && <Badge kind="overdue">low</Badge>}</td></tr>)}</tbody></table>
+            <tbody>{(allCats ? cats : cats.slice(0, 12)).map((c) => <tr key={c.group + c.category} className={c.mean < pol.lowItem ? 'low' : ''}><td>{c.category}</td><td>{groupName(db, c.group)}</td><td><b>{fmt(c.mean)}</b></td><td>{c.n}</td><td>{c.people}</td><td>{c.mean < pol.lowItem && <Badge kind="overdue">low</Badge>}</td></tr>)}</tbody></table>
         )}
         {cats.length > 12 && <p><button className="ghost" onClick={() => setAllCats(!allCats)}>{allCats ? 'Show the 12 lowest' : `Show all ${cats.length} categories`}</button></p>}
         <Source>
@@ -327,7 +327,7 @@ export default function Analytics() {
           <table><thead><tr><th>Name</th><th>Ratings by group</th><th>Gap</th></tr></thead>
             <tbody>{gaps.slice(0, 15).map(({ r, gs, gap }) => (
               <tr key={r.targetId}><td>{r.target.name} <span className="muted small">· {TARGET_TYPES[r.type]}</span></td>
-                <td>{gs.map((g) => `${GROUPS[g.k]} ${fmt(g.s)}`).join(' · ')}</td>
+                <td>{gs.map((g) => `${groupName(db, g.k)} ${fmt(g.s)}`).join(' · ')}</td>
                 <td>{gap >= 0.5 ? <Badge kind="overdue">{gap.toFixed(2)}</Badge> : gap.toFixed(2)}</td></tr>
             ))}</tbody></table>
         )}
@@ -347,7 +347,7 @@ export default function Analytics() {
             <thead><tr><th>Question</th><th>Evaluator group</th><th>Average</th><th>Previous period</th><th>Answers</th><th>Flag</th></tr></thead>
             <tbody>{items.map((r) => (
               <tr key={r.group + r.criterionId} className={r.low ? 'low' : ''}>
-                <td>{text(r.criterionId)}</td><td>{GROUPS[r.group]}</td><td><b>{fmt(r.mean)}</b></td><td>{fmt(r.prev)}</td><td>{r.n}</td>
+                <td>{text(r.criterionId)}</td><td>{groupName(db, r.group)}</td><td><b>{fmt(r.mean)}</b></td><td>{fmt(r.prev)}</td><td>{r.n}</td>
                 <td>{r.consistent ? <Badge kind="overdue">consistently low</Badge> : r.low ? <Badge kind="pending">low</Badge> : ''}</td>
               </tr>
             ))}</tbody>

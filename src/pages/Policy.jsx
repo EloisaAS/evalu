@@ -71,7 +71,7 @@ export default function Policy() {
           <label className="inline">Flag questions averaging below <input type="number" step="0.01" min="1" max="4" className="tiny" value={f.lowItem} onChange={(e) => set('lowItem', Number(e.target.value))} /></label>
           <span className="muted small">Starting value 3.00 (where Satisfactory begins). Flagged questions show in Analytics.</span>
         </div>
-        <p className="muted small">How the final rating is computed (percentages, what happens when a group has no rating, rounding) is set in <b>Rating formula</b>.</p>
+        <p className="muted small">Evaluator percentages and how the final rating is computed are set together under <b>Scoring &amp; calculation</b>.</p>
 
         <h4>4. Confidentiality and release</h4>
         <div className="row">

@@ -4,8 +4,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../lib/store';
 import {
-  TARGET_TYPES, GROUPS, AGGREGATIONS, MISSING_RULES, ROUNDING_METHODS, formGroups, formulaKey, formulaSnapshot, methodOf, methodList,
-  defaultFormula, currentPolicy, policyFor, periodById, validateFormula, computeFinal, formulaWords, howInWords, computeTarget, targetsOf, targetType, deptName,
+  TARGET_TYPES, AGGREGATIONS, MISSING_RULES, ROUNDING_METHODS, formGroups, formulaKey, formulaSnapshot, methodOf, methodList,
+  defaultFormula, currentPolicy, policyFor, periodById, validateFormula, computeFinal, formulaWords, howInWords, computeTarget, targetsOf, targetType, deptName, groupName,
 } from '../lib/logic';
 import { Card, Select, Badge, ask, fmt } from '../ui';
 
@@ -13,42 +13,45 @@ const STATUS = { draft: ['pending', 'Not sent yet'], pending: ['info', 'Waiting 
 const day = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '');
 const SAMPLE = { ST: 3.5, DEAN: 3.6, CHAIR: 3.4 };
 const short = (txt) => txt.split(':')[0];
-const words = (f) => formulaWords(f, GROUPS);
+
 /** The computation in numbers, only when it is a simple sum (percentages or the same for all); otherwise nothing. */
 const plainHow = (r) => (r.final != null && r.breakdown?.some((b) => b.share && b.contribution != null) ? howInWords(r) : '');
 
 /** The settings, in plain words. Technical settings are under "More options". */
-function FormulaForm({ f, setF, groups, readOnly }) {
+function FormulaForm({ f, setF, groups, groupNames, readOnly }) {
   const set = (k, v) => setF({ ...f, [k]: v });
   const setComp = (i, k, v) => set('components', f.components.map((c, j) => (j === i ? { ...c, [k]: v } : c)));
   const unused = groups.filter((g) => !f.components.some((c) => c.group === g));
   const total = f.components.reduce((a, c) => a + (Number(c.weight) || 0), 0);
-  const m = methodOf(f.method);
+  const availableMethods = methodList();
+  const versionsById = new Map(availableMethods.map((x) => [x.id, availableMethods.filter((y) => y.id === x.id).length]));
+  const methodLabel = (x) => `${x.label}${versionsById.get(x.id) > 1 ? ` (algorithm v${x.version})` : ''}`;
+  const m = methodOf(f.method, f.methodVersion ?? 1);
   const weighted = !!m?.usesWeights;
   // a missing-group rule that does not work with the new method has to be chosen again
-  const setMethod = (k) => setF({ ...f, method: k, missing: methodOf(k).missingRules.includes(f.missing) ? f.missing : '' });
+  const setMethod = (x) => setF({ ...f, method: x.id, methodVersion: x.version, missing: x.missingRules.includes(f.missing) ? f.missing : '' });
   const choice = (x) => (
-    <label key={x.id} className="inline fx-choice"><input type="radio" name="fx-method" disabled={readOnly} checked={f.method === x.id} onChange={() => setMethod(x.id)} /> <span>{x.label}{x.help && <span className="muted small"> · {x.help}</span>}</span></label>
+    <label key={`${x.id}@${x.version}`} className="inline fx-choice"><input type="radio" name="fx-method" disabled={readOnly} checked={f.method === x.id && (f.methodVersion ?? 1) === x.version} onChange={() => setMethod(x)} /> <span>{methodLabel(x)}{x.help && <span className="muted small"> · {x.help}</span>}</span></label>
   );
   return (
     <div className="fx-form">
-      <h4>1. How are the groups combined?</h4>
+      <h4>1. Choose how evaluator scores are combined</h4>
       <div className="fx-choices">
-        {methodList().filter((x) => !x.advanced).map(choice)}
+        {availableMethods.filter((x) => !x.advanced).map(choice)}
       </div>
       <details className="fx-more" open={m?.advanced || undefined}>
         <summary>Other ways (special cases)</summary>
         <p className="muted small">Most schools use one of the two choices above. Example with Students 3.80, Dean 2.00 and Program Chair 3.60 (40/40/20): percentages give 3.04, "a low rating counts more" gives 2.91, "counts the most" gives 2.77.</p>
-        <div className="fx-choices">{methodList().filter((x) => x.advanced).map(choice)}</div>
+        <div className="fx-choices">{availableMethods.filter((x) => x.advanced).map(choice)}</div>
       </details>
 
-      <h4>2. Which groups count{weighted ? ', and how much?' : '?'}</h4>
+      <h4>2. Choose evaluator groups{weighted ? ' and set their percentages' : ''}</h4>
       <table className="fx-comps">
         <tbody>
           {f.components.map((c, i) => (
             <tr key={c.group}>
-              <td><b>{GROUPS[c.group]}</b></td>
-              {weighted && <td><input type="number" min="0" max="100" step="5" className="tiny" disabled={readOnly} value={c.weight ?? ''} onChange={(e) => setComp(i, 'weight', e.target.value === '' ? null : Number(e.target.value))} /> %</td>}
+              <td><b>{groupNames[c.group] || c.group}</b></td>
+              {weighted && <td><input type="number" min="0" max="100" step="5" className="tiny" aria-label={`${groupNames[c.group] || c.group} percentage`} disabled={readOnly} value={c.weight ?? ''} onChange={(e) => setComp(i, 'weight', e.target.value === '' ? null : Number(e.target.value))} /> %</td>}
               {!readOnly && <td><button className="ghost" onClick={() => set('components', f.components.filter((_, j) => j !== i))}>Remove</button></td>}
             </tr>
           ))}
@@ -58,11 +61,11 @@ function FormulaForm({ f, setF, groups, readOnly }) {
       {!readOnly && unused.length > 0 && (
         <Select value="" onChange={(g) => g && set('components', [...f.components, { group: g, weight: weighted ? 0 : null, aggregation: g === 'ST' ? 'SECTION_AVERAGE' : 'AVERAGE' }])}>
           <option value="">+ Add a group…</option>
-          {unused.map((g) => <option key={g} value={g}>{GROUPS[g]}</option>)}
+          {unused.map((g) => <option key={g} value={g}>{groupNames[g] || g}</option>)}
         </Select>
       )}
       {m?.usesExpression && (
-        <label className="field">Your formula <span className="muted small">use these names: {f.components.map((c) => c.group).join(', ')} · e.g. 0.3*ST + 0.5*DEAN + 0.2*CHAIR</span>
+        <label className="field">Your formula <span className="muted small">use these names: {f.components.map((c) => c.group).join(', ')} · arithmetic, avg/min/max and if(score &gt;= 3, 4, 2) are supported</span>
           <input className="wide mono" disabled={readOnly} value={f.expression} placeholder="0.3*ST + 0.5*DEAN + 0.2*CHAIR" onChange={(e) => set('expression', e.target.value)} /></label>
       )}
 
@@ -76,13 +79,23 @@ function FormulaForm({ f, setF, groups, readOnly }) {
           <label className="inline">Rounding <Select disabled={readOnly} value={f.rounding.method} onChange={(v) => set('rounding', { ...f.rounding, method: v })}>{Object.entries(ROUNDING_METHODS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select></label>
         </div>
         <div className="row">
+          <label className="inline">Effective from <input type="date" disabled={readOnly} value={f.effectiveFrom || ''} onChange={(e) => set('effectiveFrom', e.target.value)} /></label>
+          <label className="inline">Effective until <input type="date" disabled={readOnly} value={f.effectiveUntil || ''} onChange={(e) => set('effectiveUntil', e.target.value)} /></label>
+          <span className="muted small">Dates are matched against the period's start date. Leave blank for no date limit.</span>
+        </div>
+        <div className="row">
           <label className="inline">Give a final rating only when at least <input type="number" min="1" max={Math.max(1, f.components.length)} className="tiny" disabled={readOnly} value={f.minGroups} onChange={(e) => set('minGroups', Number(e.target.value))} /> group(s) have a rating</label>
+        </div>
+        <div className="row">
+          <label className="inline">Students: require at least <input type="number" min="1" max="100" className="tiny" disabled={readOnly} value={f.participation?.percent ?? 50} onChange={(e) => set('participation', { ...f.participation, percent: Number(e.target.value) })} /> % of each class to respond</label>
+          <label className="inline"><input type="checkbox" disabled={readOnly} checked={f.participation?.plusOne ?? true} onChange={(e) => set('participation', { ...f.participation, plusOne: e.target.checked })} /> require one extra response</label>
         </div>
         {f.components.map((c, i) => (
           <div key={c.group} className="row">
-            <label className="inline">{GROUPS[c.group]}: combine their evaluations by <Select disabled={readOnly} value={c.aggregation} onChange={(v) => setComp(i, 'aggregation', v)}>
+            <label className="inline">{groupNames[c.group] || c.group}: combine their evaluations by <Select disabled={readOnly} value={c.aggregation} onChange={(v) => setComp(i, 'aggregation', v)}>
               {Object.entries(AGGREGATIONS).filter(([k]) => c.group === 'ST' || !['SECTION_AVERAGE', 'POOLED'].includes(k)).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
             </Select></label>
+            <label className="inline">{groupNames[c.group] || c.group}: transform each group's score <input className="wide mono" disabled={readOnly} value={c.transform || ''} placeholder="x (unchanged)" onChange={(e) => setComp(i, 'transform', e.target.value)} /></label>
           </div>
         ))}
       </details>
@@ -113,7 +126,7 @@ function TryItReady({ db, tt, dept, draft, baseline }) {
       <h4>Try it</h4>
       <p className="muted small">Type example ratings. Leave a box empty to see what happens when a group has no rating.</p>
       <div className="row">{groups.map((g) => (
-        <label key={g} className="inline">{GROUPS[g]} <input type="number" step="0.01" min="1" max="4" className="tiny" value={scores[g] ?? ''} placeholder="none" onChange={(e) => setScores({ ...scores, [g]: e.target.value })} /></label>
+        <label key={g} className="inline">{groupName(db, g)} <input type="number" step="0.01" min="1" max="4" className="tiny" value={scores[g] ?? ''} placeholder="none" onChange={(e) => setScores({ ...scores, [g]: e.target.value })} /></label>
       ))}</div>
       <div className="fx-compare">
         <div><span className="muted">Now</span><b>{fmt(now.final)}</b>{tag(now)}<span className="muted small">{plainHow(now)}</span></div>
@@ -140,6 +153,8 @@ function TryItReady({ db, tt, dept, draft, baseline }) {
 
 export default function Formulas() {
   const { db, user, act } = useApp();
+  const names = Object.fromEntries((db.evaluatorGroups || []).map((g) => [g.id, g.name]));
+  const words = (formula) => formulaWords(formula, names);
   const isHR = user.role === 'HR';
   const types = Object.keys(TARGET_TYPES).filter((x) => formGroups(db, x).length);
   const pendingAll = (db.formulas || []).filter((f) => f.status === 'pending');
@@ -155,7 +170,7 @@ export default function Formulas() {
   const [msg, setMsg] = useState('');
   useEffect(() => { setF(working ? structuredClone(working.config) : null); }, [working?.id, working?.status]); // eslint-disable-line react-hooks/exhaustive-deps, react/set-state-in-effect
   const groups = formGroups(db, tt);
-  const errs = f ? validateFormula(f, { allowedGroups: groups, groupNames: GROUPS }) : [];
+  const errs = f ? validateFormula(f, { allowedGroups: groups, groupNames: names }) : [];
   const editable = isHR && working && ['draft', 'rejected'].includes(working.status);
   const dirty = working && f && JSON.stringify(f) !== JSON.stringify(working.config);
   const who = `${TARGET_TYPES[tt]}${dept ? ` (${deptName(db, dept)} only)` : ''}`;
@@ -163,9 +178,10 @@ export default function Formulas() {
   // start from the formula in use (a copy), or from nothing (HR decides every part)
   const start = async (from, blank = false) => {
     const config = blank
-      ? { method: '', components: [], expression: '', missing: '', minGroups: 1, rounding: { decimals: 2, method: 'HALF_UP' } }
+      ? { method: '', methodVersion: 1, components: [], expression: '', missing: '', minGroups: 1, participation: { percent: currentPolicy(db).participationPercent, plusOne: currentPolicy(db).participationPlusOne }, effectiveFrom: '', effectiveUntil: '', rounding: { decimals: 2, method: 'HALF_UP' } }
       : structuredClone(from?.config ?? baseline);
     config.name = `${TARGET_TYPES[tt]}${dept ? ` – ${deptName(db, dept)}` : ''}`;
+    config.effectiveFrom ||= ''; config.effectiveUntil ||= '';
     delete config.id; delete config.version; delete config.key; delete config.dept;
     if (await act('saveFormulaDraft', { targetType: tt, dept: dept || null, config })) setMsg('Make your changes below, try them, then send them to the VP.');
   };
@@ -187,28 +203,28 @@ export default function Formulas() {
 
   return (
     <>
-      {isHR && <div className="note"><b>Most HR users do not need to change this.</b> This changes how group ratings are combined. Only make a change approved by HRMC; a VP must approve it before it can be used.</div>}
+      {isHR && <div className="note"><b>One place for scoring percentages and calculation.</b> Choose a category, set evaluator percentages or choose equal averaging, then check the preview and test. Send HRMC-approved changes to a VP; past results keep the formula they used.</div>}
       {msg && <div className="note ok">{msg}</div>}
       {!isHR && pendingAll.length > 0 && (
         <Card title={`Waiting for your approval (${pendingAll.length})`}>
           <ul>{pendingAll.map((p) => <li key={p.id}><button className="link" onClick={() => { setTt(p.targetType); setDept(p.dept || ''); }}>{p.config.name}</button> <span className="muted">· sent by {p.meta.submittedBy}</span></li>)}</ul>
         </Card>
       )}
-      <Card title="How the final rating is computed" actions={<span className="row" style={{ margin: 0 }}>
+      <Card title="Scoring percentages and final calculation" actions={<span className="row" style={{ margin: 0 }}>
         <Select value={tt} onChange={(v) => { setTt(v); setDept(''); setMsg(''); }} aria-label="Who is evaluated">{types.map((x) => <option key={x} value={x}>{TARGET_TYPES[x]}</option>)}</Select>
         <Select value={dept} onChange={(v) => { setDept(v); setMsg(''); }} aria-label="Department">
           <option value="">All departments</option>
           {db.departments.filter((d) => isHR || deptKeys.includes(d.id)).map((d) => <option key={d.id} value={d.id}>Only {d.name}</option>)}
         </Select>
       </span>}>
-        <p className="muted">{isHR ? 'Steps: change it here → try it → send it to the VP → after approval, start using it. Old results never change.' : 'HR changes the formula and sends it to you. Check it with "Try it", then approve it or return it to HR. Old results never change.'}</p>
+        <p className="muted">{isHR ? 'Choose who is evaluated, change the percentages or averaging method, preview and test the result, then send it for VP approval.' : 'HR changes the scoring rule and sends it to you. Check it with "Try it", then approve it or return it to HR. Old results never change.'}</p>
         <div className="fx-now">
           <span className="muted">{who} now:</span>
           <b className="fx-sentence">{words(baseline)}</b>
           <span className="muted small">If a group has no rating: {short(MISSING_RULES[baseline.missing]).toLowerCase()}. Rounded to {baseline.rounding.decimals} decimals.{active?.meta.basis ? ` Basis: ${active.meta.basis}.` : ''}</span>
-          {!active && <span className="note warn small">This is the <b>starting formula</b> that came with evalU. If the school uses a different one, {isHR ? 'click "Change this formula"' : 'HR can change it'}.</span>}
+          {!active && <span className="note warn small">This is the <b>starting formula</b> that came with evalU. If the school uses a different one, {isHR ? 'choose "Change scoring"' : 'HR can change it'}.</span>}
         </div>
-        {isHR && !working && <div className="row"><button onClick={() => start(active)}>Change this formula</button><button className="ghost" onClick={() => start(null, true)}>Start a blank formula</button><span className="muted small">Blank: you choose every part yourself.</span></div>}
+        {isHR && !working && <div className="row"><button onClick={() => start(active)}>Change scoring</button><button className="ghost" onClick={() => start(null, true)}>Build from scratch</button><span className="muted small">Build from scratch is for a completely different scoring method.</span></div>}
       </Card>
 
       {working && f && (
@@ -217,7 +233,7 @@ export default function Formulas() {
           {working.status === 'pending' && <div className="note">Basis: <b>{working.meta.basis}</b>. {isHR ? 'Waiting for the VP.' : 'Check it with "Try it", then approve or return it.'}</div>}
           {working.status === 'scheduled' && <div className="note">Approved by {working.meta.approvedBy}. It starts when HR creates the next evaluation period. Until then, {who} keep the formula in use now.</div>}
           <div className="fx-now"><b className="fx-sentence">{words(f)}</b></div>
-          <FormulaForm f={f} setF={setF} groups={groups} readOnly={!editable} />
+          <FormulaForm f={f} setF={setF} groups={groups} groupNames={names} readOnly={!editable} />
           {errs.length > 0 && editable && <div className="note warn"><b>Before sending, fix:</b><ul>{errs.map((e) => <li key={e}>{e}</li>)}</ul></div>}
           <TryIt key={working.id + f.method} db={db} tt={tt} dept={dept || null} draft={f} baseline={baseline} />
           <div className="row fx-actions">
@@ -241,7 +257,7 @@ export default function Formulas() {
             <thead><tr><th>Formula</th><th>Status</th><th>Approved</th><th>Used in</th></tr></thead>
             <tbody>{versions.map((v) => (
               <tr key={v.id}>
-                <td>{words(v.config)}<div className="muted small">Version {v.version} · {methodOf(v.config.method)?.label || v.config.method}{v.meta.basis ? ` · ${v.meta.basis}` : ''}</div></td>
+                <td>{words(v.config)}<div className="muted small">Formula v{v.version} · {methodOf(v.config.method, v.config.methodVersion ?? 1)?.label || v.config.method} algorithm v{v.config.methodVersion ?? 1}{v.meta.basis ? ` · ${v.meta.basis}` : ''}</div></td>
                 <td><Badge kind={STATUS[v.status][0]}>{STATUS[v.status][1]}</Badge></td>
                 <td className="small">{v.meta.approvedBy ? <>{v.meta.approvedBy}<div className="muted">{day(v.meta.approvedAt)}</div></> : '—'}</td>
                 <td className="small">{db.periods.filter((p) => Object.values(p.formulas || {}).some((x) => x.id === v.id)).map((p) => p.name).join(', ') || '—'}</td>
@@ -271,7 +287,7 @@ function OldResultsCheck({ db }) {
   }));
   const periods = rows ? [...new Set(rows.map((x) => x.r.periodId))] : [];
   const bad = rows ? rows.filter((x) => !x.same) : [];
-  const label = (x) => `${x.f.name || 'Starting formula'}${x.f.version ? ` v${x.f.version}` : ''} (${(methodOf(x.f.method)?.label || x.f.method || '').toLowerCase()})`;
+  const label = (x) => `${x.f.name || 'Starting formula'}${x.f.version ? ` v${x.f.version}` : ''} (${(methodOf(x.f.method, x.f.methodVersion ?? 1)?.label || x.f.method || '').toLowerCase()} algorithm v${x.f.methodVersion ?? 1})`;
   return (
     <Card title="Check old ratings" actions={<button className="ghost" onClick={check}>{rows ? 'Check again' : 'Check now'}</button>}>
       <p className="muted">Click "Check now" to make sure that changing the formula did not change any old rating.</p>

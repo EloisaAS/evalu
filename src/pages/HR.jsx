@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '../lib/store';
 import {
-  GROUPS, TARGET_TYPES, STAGES, STAGE_LABEL, taskStatus, userById, sectionStats, targetsOf, evaluatorGroups, deptName,
-  formUsed, itemCategory, effectiveWeights, isExemptSection, isTeacher, pendingApprovals, periodCovers, CLASS_TYPES, approvalRuleText, policyFor, activeFormula, formulaText,
+  TARGET_TYPES, STAGES, STAGE_LABEL, taskStatus, userById, sectionStats, targetsOf, evaluatorGroups, deptName, groupName,
+  formUsed, itemCategory, effectiveWeights, isExemptSection, isTeacher, pendingApprovals, periodCovers, CLASS_TYPES, approvalRuleText, policyFor,
 } from '../lib/logic';
 
 /** Types of class HR can pick for a section. A Clinical Instructor (Nursing) works in the clinical area or the skills lab. */
@@ -37,6 +37,7 @@ export function Periods() {
   const { db, act } = useApp();
   const [pick, setPick] = useState(() => nextTerm(db));
   const [weeks, setWeeks] = useState(21);
+  const [startDate, setStartDate] = useState(isoIn(0));
   const [deadline, setDeadline] = useState(isoIn(21));
   const [depts, setDepts] = useState([]);
   const [msg, setMsg] = useState('');
@@ -44,9 +45,9 @@ export function Periods() {
   const exists = periodExists(db, pick.ay, pick.term);
   const add = async () => {
     if (exists) return setMsg(`${name} already exists.`);
-    const r = await act('createPeriod', { name, deadline, depts });
+    const r = await act('createPeriod', { name, startsOn: startDate, deadline, depts });
     if (r) {
-      setDepts([]); setMsg(`${name} created.${r.started?.length ? ` The new rating formula starts with this period: ${r.started.join(', ')}.` : ''} Go to Assignments and click "Generate tasks for period".`);
+      setDepts([]); setStartDate(isoIn(0)); setMsg(`${name} created.${r.started?.length ? ` The new rating formula starts with this period: ${r.started.join(', ')}.` : ''} Go to Assignments and click "Generate tasks for period".`);
       // suggest the following term next time
       const ys = schoolYears();
       setPick(pick.term === 'Term 1' ? { ay: pick.ay, term: 'Term 2' } : { ay: ys[Math.min(ys.indexOf(pick.ay) + 1, ys.length - 1)], term: 'Term 1' });
@@ -61,7 +62,7 @@ export function Periods() {
       {msg && <div className="note">{msg}</div>}
       <Card title="Evaluation periods">
         <table>
-          <thead><tr><th>Period</th><th>Covers</th><th>Deadline</th><th>Status</th><th>Release</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Period</th><th>Covers</th><th>Starts</th><th>Deadline</th><th>Status</th><th>Release</th><th>Actions</th></tr></thead>
           <tbody>
             {newestFirst(db.periods).map((p) => {
               const nextStage = STAGES[STAGES.indexOf(p.releaseStage) + 1];
@@ -70,6 +71,7 @@ export function Periods() {
                 <tr key={p.id}>
                   <td>{p.name}</td>
                   <td className="muted">{scopeText(db, p)}</td>
+                  <td>{p.startDate || '—'}</td>
                   <td><input type="date" value={p.deadline} onChange={(e) => e.target.value && act('setPeriodDeadline', { periodId: p.id, deadline: e.target.value })} /></td>
                   <td><Badge kind={p.status === 'open' ? 'pending' : 'completed'}>{p.status}</Badge></td>
                   <td>{STAGE_LABEL[p.releaseStage]}{p.releaseStage === 'dir' && <><br /><span className="muted">{waiting.length ? `Waiting for approval (${approvalRuleText(db, p)}): ${waiting.map((u) => u.name).join(', ')}` : 'Enough VPs approved'}</span></>}
@@ -102,6 +104,7 @@ export function Periods() {
               {OPEN_FOR.map(([d, l]) => <option key={d} value={d}>{l}</option>)}
               {!OPEN_FOR.some(([d]) => d === weeks) && <option value={weeks}>chosen date</option>}
             </Select></label>
+          <label className="inline">Starts on <input type="date" value={startDate} onChange={(e) => e.target.value && setStartDate(e.target.value)} /></label>
           <label className="inline">Deadline <input type="date" value={deadline} onChange={(e) => { if (e.target.value) { setDeadline(e.target.value); setWeeks(0); } }} /></label>
         </div>
         <div className="row">
@@ -117,8 +120,8 @@ export function Periods() {
             </span>
           ))}
         </div>
-        <p className={exists ? 'note warn' : 'muted'}>{exists ? <><b>{name}</b> already exists. Pick another term or school year.</> : <>This will create <b>{name}</b> for <b>{depts.length ? depts.map((d) => deptName(db, d)).join(', ') : 'all departments'}</b>, open until <b>{new Date(deadline + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}</b>.</>}</p>
-        <div className="row"><button onClick={add} disabled={exists}>Create {name}</button></div>
+        <p className={exists || startDate > deadline ? 'note warn' : 'muted'}>{exists ? <><b>{name}</b> already exists. Pick another term or school year.</> : startDate > deadline ? 'The start date must be on or before the deadline.' : <>This will create <b>{name}</b> for <b>{depts.length ? depts.map((d) => deptName(db, d)).join(', ') : 'all departments'}</b>, starting <b>{new Date(startDate + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}</b> and open until <b>{new Date(deadline + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}</b>.</>}</p>
+        <div className="row"><button onClick={add} disabled={exists || startDate > deadline}>Create {name}</button></div>
         <p className="muted">You can open and close evaluations for one department at a time by creating a period for just that department. The current evaluator weights are saved with the period.</p>
       </Card>
       <details className="card advanced-panel">
@@ -179,7 +182,7 @@ export function Assignments() {
         <p className="muted">Reminders are also sent automatically once a day during the last 7 days before the deadline, and every day after it until the period is closed.</p>
         <table>
           <thead><tr><th>Evaluator group</th><th>Pending</th><th>Completed</th><th>Overdue</th></tr></thead>
-          <tbody>{Object.entries(summary).map(([g, x]) => <tr key={g}><td>{GROUPS[g]}</td><td>{x.pending}</td><td>{x.completed}</td><td>{x.overdue}</td></tr>)}</tbody>
+          <tbody>{Object.entries(summary).map(([g, x]) => <tr key={g}><td>{groupName(db, g)}</td><td>{x.pending}</td><td>{x.completed}</td><td>{x.overdue}</td></tr>)}</tbody>
         </table>
       </Card>
       <details className="card advanced-panel">
@@ -187,14 +190,14 @@ export function Assignments() {
         <div className="advanced-content">
         <Card title="Add an evaluator assignment">
           <div className="row">
-            <Select value={add.evaluatorId} onChange={(v) => setAdd({ ...add, evaluatorId: v })}><option value="">Evaluator…</option>{evaluators.map((u) => <option key={u.id} value={u.id}>{u.name} ({evaluatorGroups(u).map((g) => GROUPS[g]).join(' / ')})</option>)}</Select>
+            <Select value={add.evaluatorId} onChange={(v) => setAdd({ ...add, evaluatorId: v })}><option value="">Evaluator…</option>{evaluators.map((u) => <option key={u.id} value={u.id}>{u.name} ({evaluatorGroups(u).map((g) => groupName(db, g)).join(' / ')})</option>)}</Select>
             <Select value={add.targetId} onChange={(v) => setAdd({ ...add, targetId: v })}><option value="">Evaluates…</option>{targetsOf(db).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</Select>
             <button onClick={addOne}>Add</button>
           </div>
         </Card>
         <Card title={`All individual evaluations (${listed.length})`}>
         <div className="row">
-          <Select value={grp} onChange={setGrp}><option value="">All evaluator groups</option>{Object.keys(summary).map((g) => <option key={g} value={g}>{GROUPS[g]}</option>)}</Select>
+          <Select value={grp} onChange={setGrp}><option value="">All evaluator groups</option>{Object.keys(summary).map((g) => <option key={g} value={g}>{groupName(db, g)}</option>)}</Select>
           <Select value={st} onChange={setSt}><option value="">Any status</option><option value="pending">Pending</option><option value="completed">Completed</option><option value="overdue">Overdue</option></Select>
           <input placeholder="Search a name (optional)" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
@@ -204,7 +207,7 @@ export function Assignments() {
           <tbody>
             {rows.map((t) => (
               <tr key={t.id}>
-                <td>{userById(db, t.evaluatorId).name}</td><td>{GROUPS[t.group]}</td><td>{userById(db, t.targetId).name}</td>
+                <td>{userById(db, t.evaluatorId).name}</td><td>{groupName(db, t.group)}</td><td>{userById(db, t.targetId).name}</td>
                 <td>{db.sections.find((x) => x.id === t.sectionId)?.code || '—'}</td><td><StatusBadge s={taskStatus(db, t)} /></td>
                 <td>{!t.response && <button className="ghost" onClick={async () => (await ask('Remove this task?', `${userById(db, t.evaluatorId).name} will no longer evaluate ${userById(db, t.targetId).name} in this period.`, { ok: 'Remove task', danger: true })) && act('removeTask', { taskId: t.id })}>Remove</button>}</td>
               </tr>
@@ -392,8 +395,8 @@ export function Forms() {
     i.variant ? WHEN[i.variant] : i.targetType === 'CI' ? 'clinical area (hospital, community clinic)' : i.group === 'ST' && i.targetType === 'COLLEGE_FACULTY' && !i.dept ? 'lecture classes' : '',
     i.dept ? `only ${deptName(db, i.dept).replace(/\s*\([A-Z]+\)$/, '')}` : '',
   ].filter(Boolean).join(', ');
-  const label = (i) => `Rated by ${GROUPS[i.group] === 'Students' ? 'the students' : `the ${GROUPS[i.group]}`}${whenUsed(i) ? ` — ${whenUsed(i)}` : ''}${!isUb(i) ? (i.items.length ? ' (custom form)' : ' (custom form, no questions yet)') : ''}${i.active === false ? ` (old version ${i.version || 1})` : ''}`;
-  const groupOrder = Object.keys(GROUPS);
+  const label = (i) => `Rated by ${i.group === 'ST' ? 'the students' : `the ${groupName(db, i.group)}`}${whenUsed(i) ? ` — ${whenUsed(i)}` : ''}${!isUb(i) ? (i.items.length ? ' (custom form)' : ' (custom form, no questions yet)') : ''}${i.active === false ? ` (old version ${i.version || 1})` : ''}`;
+  const groupOrder = (db.evaluatorGroups || []).map((g) => g.id);
   const byType = Object.keys(TARGET_TYPES).map((tt) => [tt, forms.filter((i) => i.targetType === tt)
     .sort((a, b) => groupOrder.indexOf(a.group) - groupOrder.indexOf(b.group) || (a.dept ? 99 : VORDER.indexOf(a.variant || '')) - (b.dept ? 99 : VORDER.indexOf(b.variant || '')) || (b.version || 1) - (a.version || 1))]).filter(([, l]) => l.length);
 
@@ -416,7 +419,7 @@ export function Forms() {
         {ins && (
           <>
             <div className="form-about">
-              <span><b>{TARGET_TYPES[ins.targetType]}</b>, rated by <b>{GROUPS[ins.group] === 'Students' ? 'the students' : `the ${GROUPS[ins.group]}`}</b></span>
+              <span><b>{TARGET_TYPES[ins.targetType]}</b>, rated by <b>{ins.group === 'ST' ? 'the students' : `the ${groupName(db, ins.group)}`}</b></span>
               <span>Used for: {whenUsed(ins) || 'everyone of this kind'}</span>
               <span>{isUb(ins) ? <>UB tool: {ins.name.replace(' (UB tool)', '')}</> : <>Custom form made in evalU (not one of UB's tools){!ins.items.length && <> · <b>no questions yet</b></>}</>}</span>
               <span>{(ins.version || 1) === 1 ? 'Original version' : `Version ${ins.version} (changed ${ins.version - 1} time${ins.version > 2 ? 's' : ''})`}{ins.active === false ? ' · old, kept for past results' : ' · in use'}</span>
@@ -493,7 +496,7 @@ export function Forms() {
         <summary><b>+ Add a custom form</b> <span className="muted">(only if UB adds a new evaluation tool; the UB forms above are already set up)</span></summary>
         <div className="row">
           <Select value={nf.targetType} onChange={(v) => setNf({ ...nf, targetType: v, group: groupsFor(v)[0] })}>{Object.entries(TARGET_TYPES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select>
-          <Select value={nf.group} onChange={(v) => setNf({ ...nf, group: v })}>{groupsFor(nf.targetType).map((g) => <option key={g} value={g}>{GROUPS[g]}</option>)}</Select>
+          <Select value={nf.group} onChange={(v) => setNf({ ...nf, group: v })}>{groupsFor(nf.targetType).map((g) => <option key={g} value={g}>{groupName(db, g)}</option>)}</Select>
           <Select value={nf.dept} onChange={(v) => setNf({ ...nf, dept: v })}><option value="">All departments</option>{db.departments.map((d) => <option key={d.id} value={d.id}>Only {d.name}</option>)}</Select>
           <Select value={nf.variant} onChange={(v) => setNf({ ...nf, variant: v })}>{Object.entries(CLASS_TYPES).map(([k, l]) => <option key={k} value={k}>{k ? `Only for: ${l}` : 'Any type of class'}</option>)}</Select>
           <button onClick={async () => { const r = await act('createForm', nf); if (r) setSel(r.id); }}>Create empty form</button>
@@ -518,40 +521,6 @@ export function Forms() {
         </div>
       </details>
     </>
-  );
-}
-
-/* ---------------- Weights (FR5, NFR8) ---------------- */
-export function Weights() {
-  const { db, act } = useApp();
-  return (
-    <Card title="Evaluator-group weights (%)">
-      <p className="note"><b>Usually, you do not need to change these numbers.</b> Change them only when HRMC has approved new percentages. A change applies to open and future terms; closed terms keep their old numbers.</p>
-      <p className="muted">Starting percentages: College faculty — Students 40, Dean 40, Program Chair 20; Basic Education — Students 40, Principal 20, Assistant Principal 20, Subject Head 20; non-teaching staff and their office heads rate each other; Clinical Instructors (CIs) — Students 50, Dean 50 until UB gives the official ones. Deans have no starting percentages, so enter them. If a group gives no rating, the other groups are used.</p>
-      <p className="muted">This page is the quick way to change the percentages. To change <b>how</b> the final rating is computed (for example, every group counts the same), use <b>Rating formula</b>. Once a group of people has a formula there, its percentages are changed there.</p>
-      {Object.entries(db.rules).map(([tt, rule]) => {
-        const total = Object.values(rule).reduce((a, w) => a + (Number(w) || 0), 0);
-        const af = activeFormula(db, tt);
-        if (af) return (
-          <div key={tt}>
-            <h4>{TARGET_TYPES[tt]} <Badge kind="completed">formula v{af.version}</Badge></h4>
-            <p className="muted">Computed with <b>{af.config.name}</b> (version {af.version}): <span className="mono">{formulaText(af.config)}</span>. Change it under Rating formula.</p>
-          </div>
-        );
-        return (
-          <div key={tt}>
-            <h4>{TARGET_TYPES[tt]} {total !== 100 && <Badge kind="overdue">total {total}% (should be 100%)</Badge>}</h4>
-            <div className="row">
-              {Object.keys(rule).map((g) => (
-                <label key={g} className="inline">{GROUPS[g]}{' '}
-                  <PercentPicker value={rule[g]} onSave={(weight) => act('setGroupWeight', { targetType: tt, group: g, weight })} />
-                </label>
-              ))}
-            </div>
-          </div>
-        );
-      })}
-    </Card>
   );
 }
 

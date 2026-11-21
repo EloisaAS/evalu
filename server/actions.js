@@ -3,7 +3,7 @@
 // FR numbers refer to Table 8 of the manuscript.
 import { randomInt } from 'node:crypto';
 import {
-  GROUPS, TARGET_TYPES, STAGES, ROLES, POSITIONS, needsDept, uid, userById, periodById, targetType, evaluatorGroups,
+  GROUPS, TARGET_TYPES, STAGES, ROLES, POSITIONS, needsDept, uid, userById, periodById, targetType, evaluatorGroups, defaultEvaluatorGroups, groupName,
   instrumentFor, formForTask, formUsed, effectiveWeights, generateTasks, runThresholdCheck, participationAlerts, sendReminders,
   isInstitutionalEmail, INSTITUTION_DOMAIN, notify, directors, pendingApprovals, resultHeads, hrUsers, isEvaluatee, isTeacher, isNursingDept, stageAtLeast, UB_DEPARTMENTS, missingUbDepartments, MAX_RATING, CLASS_TYPES,
   currentPolicy, formulaKey, activeFormula, formulaSnapshot, formGroups, validateFormula, computeAll, storeResults, methodOf, METHODS, AGGREGATIONS, MISSING_RULES, ROUNDING_METHODS,
@@ -26,7 +26,9 @@ function text(v, label, max = 200) {
   return v.trim();
 }
 function date(v) {
-  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(Date.parse(v))) fail('Enter a valid date.');
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) fail('Enter a valid date.');
+  const timestamp = Date.parse(`${v}T00:00:00Z`);
+  if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString().slice(0, 10) !== v) fail('Enter a valid date.');
   return v;
 }
 function number(v, label, min, max) {
@@ -62,7 +64,7 @@ function cleanComment(comment) {
 
 // ---------- accounts ----------
 const USERNAME = /^[a-z0-9._-]{3,32}$/;
-function accountFields(db, { name, username, email, role, position, dept }, editingId = null) {
+function accountFields(db, { name, username, email, role, position, dept, evaluatorGroupIds }, editingId = null) {
   const u = { name: text(name, 'Full name', 100) };
   u.username = typeof username === 'string' ? username.trim().toLowerCase() : '';
   if (!USERNAME.test(u.username)) fail('Username must be 3–32 characters: lowercase letters, numbers, dots, dashes or underscores.');
@@ -75,6 +77,12 @@ function accountFields(db, { name, username, email, role, position, dept }, edit
   u.role = role; u.position = position;
   u.dept = needsDept(role) ? find(db.departments, dept, 'Department').id : null;
   if (position === 'ci' && !isNursingDept(db.departments.find((d) => d.id === u.dept))) fail('Clinical Instructors belong to the School of Nursing. Choose the School of Nursing as the department.');
+  if (role === 'TP' || role === 'NTP') {
+    const assigned = Array.isArray(evaluatorGroupIds) ? evaluatorGroupIds : defaultEvaluatorGroups(role, position);
+    const active = new Set((db.evaluatorGroups || []).filter((g) => g.active !== false).map((g) => g.id));
+    if (assigned.some((id) => !active.has(id))) fail('Choose only active evaluator groups.');
+    u.evaluatorGroupIds = [...new Set(assigned)];
+  } else u.evaluatorGroupIds = [];
   return u;
 }
 /** Put a student in exactly these class sections (only sections of their department). */
@@ -140,28 +148,42 @@ function sectionFields(db, { code, subject, facultyId }, editingId = null) {
 // ---------- notifications for the release steps ----------
 
 /** Keep only the parts of a formula the engine understands (never code, never extra fields). */
-function cleanFormula(c = {}) {
+function cleanFormula(c = {}, policy = {}, groups = Object.keys(GROUPS)) {
   const pick = (v, list, def) => (typeof v === 'string' && Object.hasOwn(list, v) ? v : def);
+  const method = pick(c.method, METHODS, '');
+  const methodVersion = c.methodVersion == null ? 1 : Number(c.methodVersion);
+  if (!Number.isSafeInteger(methodVersion) || methodVersion < 1) fail('Computation method version must be a positive whole number.');
+  if (method && !methodOf(method, methodVersion)) fail(`Computation method "${method}" version ${methodVersion} is not available.`);
   return {
     name: text(c.name || 'Untitled formula', 'Formula name', 120),
-    method: pick(c.method, METHODS, ''), // a blank formula leaves the choice to HR
+    method, // a blank formula leaves the choice to HR
+    methodVersion,
     components: (Array.isArray(c.components) ? c.components : []).slice(0, 12).map((x) => ({
-      group: Object.hasOwn(GROUPS, x?.group) ? x.group : fail('Unknown evaluator group.'),
+      group: groups.includes(x?.group) ? x.group : fail('Unknown evaluator group.'),
       weight: x.weight === '' || x.weight == null ? null : number(x.weight, 'Weight', 0, 100),
       aggregation: pick(x.aggregation, AGGREGATIONS, x.group === 'ST' ? 'SECTION_AVERAGE' : 'AVERAGE'),
+      transform: typeof x.transform === 'string' ? x.transform.slice(0, 300) : '',
     })),
     expression: typeof c.expression === 'string' ? c.expression.slice(0, 300) : '',
     missing: pick(c.missing, MISSING_RULES, ''),
     minGroups: Math.max(1, Math.min(12, Number.parseInt(c.minGroups, 10) || 1)),
+    participation: {
+      percent: number(c.participation?.percent ?? policy.participationPercent ?? 50, 'Student participation %', 1, 100),
+      plusOne: typeof c.participation?.plusOne === 'boolean' ? c.participation.plusOne : policy.participationPlusOne !== false,
+    },
+    effectiveFrom: c.effectiveFrom ? date(c.effectiveFrom) : '',
+    effectiveUntil: c.effectiveUntil ? date(c.effectiveUntil) : '',
     rounding: { decimals: Math.max(0, Math.min(4, Number.parseInt(c.rounding?.decimals, 10) || 0)), method: pick(c.rounding?.method, ROUNDING_METHODS, 'HALF_UP') },
   };
 }
+const formulaEffectiveOn = (f, day) => (!f.config.effectiveFrom || f.config.effectiveFrom <= day)
+  && (!f.config.effectiveUntil || f.config.effectiveUntil >= day);
 /** Put an approved formula version in use: the old version of the same category is archived. */
 function putInUse(db, f, user, how = 'activated') {
   for (const old of db.formulas.filter((x) => x.key === f.key && x.status === 'active')) { old.status = 'archived'; logFormula(old, user, 'archived', `replaced by version ${f.version}`); }
   f.status = 'active'; f.meta.activatedBy = user.name; f.meta.activatedAt = new Date().toISOString();
   logFormula(f, user, how);
-  const weights = Object.fromEntries(f.config.components.map((c) => [c.group, methodOf(f.config.method)?.usesWeights ? c.weight : null]));
+  const weights = Object.fromEntries(f.config.components.map((c) => [c.group, methodOf(f.config.method, f.config.methodVersion)?.usesWeights ? c.weight : null]));
   if (!f.dept) db.rules[f.targetType] = weights; // the groups that get tasks (and what the Weights page shows)
   return weights;
 }
@@ -266,6 +288,25 @@ export const actions = {
       Object.assign(u, next);
       for (const s of db.sections) if (s.facultyId === u.id) s.dept = u.dept;
       enroll(db, u, sectionIds ?? db.sections.filter((s) => s.studentIds.includes(u.id)).map((s) => s.id));
+    },
+  },
+  addEvaluatorGroup: {
+    roles: HR,
+    run(db, { name, targetTypes }) {
+      db.evaluatorGroups ||= [];
+      const label = text(name, 'Evaluator group name', 80);
+      if (!Array.isArray(targetTypes) || !targetTypes.length) fail('Choose at least one evaluated category for this group.');
+      const targets = [...new Set(targetTypes)];
+      if (targets.some((tt) => !Object.hasOwn(TARGET_TYPES, tt))) fail('Choose valid evaluated categories.');
+      const id = label.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 30).replace(/_+$/g, '');
+      if (!/^[A-Z][A-Z0-9_]{1,29}$/.test(id)) fail('The group name must produce an ID with at least two letters or numbers.');
+      if (db.evaluatorGroups.some((g) => g.id === id || g.name.toLowerCase() === label.toLowerCase())) fail('An evaluator group with that ID or name already exists.', 409);
+      db.evaluatorGroups.push({ id, name: label, builtIn: false, active: true });
+      for (const tt of targets) {
+        db.rules[tt] ||= {};
+        db.rules[tt][id] = null;
+      }
+      return { id, name: label, targetTypes: targets };
     },
   },
   setUserActive: {
@@ -432,15 +473,24 @@ export const actions = {
   /* ---------- HR: evaluation periods & release ---------- */
   createPeriod: {
     roles: HR,
-    run(db, { name, deadline, depts }, user) {
+    run(db, { name, deadline, startsOn, depts }, user) {
       const list = Array.isArray(depts) ? [...new Set(depts)].map((d) => find(db.departments, d, 'Department').id) : [];
-      const started = (db.formulas || []).filter((f) => f.status === 'scheduled');
+      const startDate = date(startsOn || new Date().toISOString().slice(0, 10));
+      const endDate = date(deadline);
+      if (startDate > endDate) fail('The evaluation period must start on or before its deadline.');
+      const started = (db.formulas || []).filter((f) => f.status === 'scheduled' && formulaEffectiveOn(f, startDate));
       for (const f of started) putInUse(db, f, user, 'activated (scheduled for this new period)');
+      const expired = (db.formulas || []).filter((f) => f.status === 'active' && !formulaEffectiveOn(f, startDate));
+      for (const f of expired) {
+        if (!db.formulas.some((candidate) => candidate.key === f.key && formulaEffectiveOn(candidate, startDate) && candidate.status === 'active')) {
+          fail(`No formula version for ${TARGET_TYPES[f.targetType]} is effective on ${startDate}. Set an effective period or schedule an approved replacement first.`, 409);
+        }
+      }
       const p = {
-        id: uid('p'), name: text(name, 'Period name', 120), deadline: date(deadline), status: 'open', releaseStage: 'hr', thresholdChecked: false,
+        id: uid('p'), name: text(name, 'Period name', 120), startDate, deadline: endDate, status: 'open', releaseStage: 'hr', thresholdChecked: false,
         rules: clone(db.rules),   // NFR8: the weights in force for this period
         policy: currentPolicy(db), // the policy version in force for this period (threshold, bands, approvals…)
-        formulas: Object.fromEntries((db.formulas || []).filter((f) => f.status === 'active').map((f) => [f.key, formulaSnapshot(f)])), // the formula versions this period is computed with
+        formulas: Object.fromEntries((db.formulas || []).filter((f) => f.status === 'active' && formulaEffectiveOn(f, startDate)).map((f) => [f.key, formulaSnapshot(f)])), // the formula versions this period is computed with
         depts: list.length ? list : null, // FR8: one department, several, or all
         approvals: [], rejections: [],
       };
@@ -723,7 +773,7 @@ export const actions = {
     roles: HR,
     run(db, { id, targetType: tt, dept, config }, user) {
       db.formulas ||= [];
-      const clean = cleanFormula(config);
+      const clean = cleanFormula(config, currentPolicy(db), (db.evaluatorGroups || []).filter((g) => g.active !== false).map((g) => g.id));
       if (id) {
         const f = formulaRec(db, id);
         if (!['draft', 'rejected'].includes(f.status)) fail('Only a draft can be edited. Make a new version instead.', 409);
@@ -756,7 +806,7 @@ export const actions = {
     run(db, { id, basis }, user) {
       const f = formulaRec(db, id);
       if (f.status !== 'draft') fail('Only a draft can be submitted.', 409);
-      const errs = validateFormula(f.config, { allowedGroups: formGroups(db, f.targetType), groupNames: GROUPS });
+      const errs = validateFormula(f.config, { allowedGroups: formGroups(db, f.targetType), groupNames: Object.fromEntries((db.evaluatorGroups || []).map((g) => [g.id, g.name])) });
       if (errs.length) fail(`Fix the formula first: ${errs.join(' ')}`);
       const why = text(basis, 'Basis (committee decision or memo)', 300);
       if (why.length < 5) fail('Write the basis of this formula, e.g. "Evaluation Tool Committee resolution no. 3, s. 2026".');
@@ -802,6 +852,9 @@ export const actions = {
         return { version: f.version, scheduled: true };
       }
       if (when !== 'now') fail('Choose when the formula starts.');
+      const today = new Date().toISOString().slice(0, 10);
+      if (f.config.effectiveFrom && f.config.effectiveFrom > today) fail('This formula starts in the future. Schedule it to start with a period on or after its effective-from date.', 409);
+      if (!formulaEffectiveOn(f, today)) fail('This formula is outside its effective dates.', 409);
       const snap = formulaSnapshot(f);
       const weights = putInUse(db, f, user);
       // open periods take the new version only while nobody in that category has been evaluated yet,
@@ -810,6 +863,7 @@ export const actions = {
       for (const p of db.periods.filter((x) => x.status === 'open')) {
         const inCat = (t) => { const u = userById(db, t.targetId); return targetType(db, u) === f.targetType && (!f.dept || u?.dept === f.dept); };
         if (db.tasks.some((t) => t.periodId === p.id && t.response && inCat(t))) { kept++; continue; }
+        if (!formulaEffectiveOn(f, p.startDate || new Date().toISOString().slice(0, 10))) { kept++; continue; }
         p.formulas = { ...(p.formulas || {}), [f.key]: snap };
         if (!f.dept) { p.rules ||= clone(db.rules); p.rules[f.targetType] = clone(weights); }
         applied++;
@@ -960,7 +1014,7 @@ export function describeAction(name, args, db, result) {
   if (name === 'changePassword') return 'Changed own password';
   // before → after values, so every rule change can be traced
   if (name === 'setPolicy' && result?.changed) return `policy version ${result.version}: ${result.changed.map((c) => `${c.field} ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`).join('; ')} · reason: ${args.reason}`;
-  if (/Formula/.test(name)) { const f = (db.formulas || []).find((x) => x.id === (args.id || result?.id)); const tag = f ? `formula: ${f.config.name} v${f.version} (${TARGET_TYPES[f.targetType]}${f.dept ? ', ' + f.dept : ''}) · status: ${f.status}` : (result?.deleted ? `formula: ${result.deleted}` : 'formula'); return [tag, args.basis && `basis: ${args.basis}`, args.reason && `reason: ${args.reason}`, result?.applied != null && `applied to ${result.applied} open period(s), ${result.kept} kept the previous version`, result?.scheduled && 'starts with the next evaluation period'].filter(Boolean).join(' · '); }
+  if (/Formula/.test(name)) { const f = (db.formulas || []).find((x) => x.id === (args.id || result?.id)); const tag = f ? `formula: ${f.config.name} v${f.version} (${TARGET_TYPES[f.targetType]}${f.dept ? ', ' + f.dept : ''}) · algorithm: ${methodOf(f.config.method, f.config.methodVersion ?? 1)?.label || f.config.method} v${f.config.methodVersion ?? 1} · status: ${f.status}` : (result?.deleted ? `formula: ${result.deleted}` : 'formula'); return [tag, args.basis && `basis: ${args.basis}`, args.reason && `reason: ${args.reason}`, result?.applied != null && `applied to ${result.applied} open period(s), ${result.kept} kept the previous version`, result?.scheduled && 'starts with the next evaluation period'].filter(Boolean).join(' · '); }
   if (name === 'createPeriod' && result?.started?.length) return `name: ${args.name} · formula(s) started with this period: ${result.started.join(', ')}`;
   if (name === 'returnToHR') { const per = periodById(db, args.periodId); return `period: ${per?.name} · returned to HR · reason: ${args.reason}`; }
   const parts = [];
@@ -968,8 +1022,8 @@ export function describeAction(name, args, db, result) {
   const p = a.periodId && periodById(db, a.periodId);
   if (p) parts.push(`period: ${p.name}`);
   for (const k of ['userId', 'targetId', 'evaluatorId']) { const u = a[k] && userById(db, a[k]); if (u) parts.push(`${k.replace('Id', '')}: ${u.name}`); }
-  if (a.instrumentId) { const i = db.instruments.find((x) => x.id === a.instrumentId); if (i) parts.push(`form: ${TARGET_TYPES[i.targetType]} ← ${GROUPS[i.group]} v${i.version || 1}`); }
-  if (a.targetType && a.group) parts.push(`${TARGET_TYPES[a.targetType] || a.targetType} ← ${GROUPS[a.group] || a.group}`);
+  if (a.instrumentId) { const i = db.instruments.find((x) => x.id === a.instrumentId); if (i) parts.push(`form: ${TARGET_TYPES[i.targetType]} ← ${groupName(db, i.group)} v${i.version || 1}`); }
+  if (a.targetType && a.group) parts.push(`${TARGET_TYPES[a.targetType] || a.targetType} ← ${groupName(db, a.group)}`);
   if ('weight' in a) parts.push(result && 'from' in result ? `weight: ${result.from ?? 'blank'} → ${result.to ?? 'blank'}` : `weight: ${a.weight ?? 'blank'}`);
   if (a.taskId) { const t = db.tasks.find((x) => x.id === a.taskId); const tg = t && userById(db, t.targetId); if (tg) parts.push(`evaluation of ${tg.name}`); }
   if (a.office) parts.push(`requested by: ${a.office}`);

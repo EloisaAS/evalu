@@ -3,6 +3,7 @@ import { andList, num } from './util.js';
 
 export default {
   id: 'AVERAGE',
+  version: 1,
   label: 'Count every group the same',
   help: 'Example: Students, Dean and Program Chair added, then divided by 3 (simple average).',
   usesWeights: false,

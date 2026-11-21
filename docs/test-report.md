@@ -1,12 +1,12 @@
 # evalU validation test report
 
-Run: 2026-11-21T06:10:59.876Z · Node v26.13.1 · code version a17d228 · fresh test database with the sample data
+Run: 2026-11-21T08:31:42.334Z · Node v26.13.1 · code version 0c2d0bb · fresh test database with the sample data
 
-**Result: 55 of 55 test cases passed.**
+**Result: 62 of 62 test cases passed.**
 
 Each case runs automatically (`npm run test:validation`). "Actual" is measured during this run, not written by hand.
 Part A checks the computation rules on controlled data; Part B runs the real server, database and access control;
-Part C checks the formula engine and its approval and versions; Part D the comment analysis; Part E the computation modules (plug-ins), the effective period and the reproducibility of stored results.
+Part C checks the formula engine and its approval and versions; Part D the comment analysis; Part E the computation modules (plug-ins), the effective period and the reproducibility of stored results; Part F HR-configurable evaluator groups and access control.
 
 | ID | Requirement | Scenario | Expected | Actual | Result |
 |---|---|---|---|---|---|
@@ -50,6 +50,9 @@ Part C checks the formula engine and its approval and versions; Part D the comme
 | TC-38 | Security: no code execution | Expressions with code: process.exit(), constructor(1), ST.constructor, __proto__ | all rejected | all rejected | PASS |
 | TC-39 | Dynamic formula: rounding | 3.465 half up / half even, 3.469 down, 3.461 up; 3.4567 to 3 decimals | [3.47,3.46,3.46,3.47,3.457] | [3.47,3.46,3.46,3.47,3.457] | PASS |
 | TC-40 | Formula validation | Weights total 90%; a group with no form for this category | 2 | 2 | PASS |
+| TC-56 | Formula conditions | Safe IF and comparison operators choose a result from configured score conditions | 4.3 | 4.3 | PASS |
+| TC-57 | Score transformation | Transform a group score before weighted computation | 3.48 | 3.48 | PASS |
+| TC-58 | Formula participation | A formula can count a class at 50% without the legacy plus-one policy | {"valid":true,"score":3.5} | {"valid":true,"score":3.5} | PASS |
 | TC-41 | Formula approval workflow | Draft → activate without approval → submit without basis → HR approves own → VP approves → HR activates | ["409","400","403","200","200"] | ["409","400","403","200","200"] | PASS |
 | TC-42 | Formula versioning | After activating the new formula: a closed period keeps its rating; the open period with answers keeps its formula | {"closedUnchanged":true,"openKept":true} | {"closedUnchanged":true,"openKept":true} | PASS |
 | TC-43 | Formula versioning | A period created after activation uses the new version | new version | new version | PASS |
@@ -64,6 +67,10 @@ Part C checks the formula engine and its approval and versions; Part D the comme
 | TC-52 | Computation modules | "Count it as 0" with a harmonic mean (would divide by zero); with a geometric mean (every rating would be 0) | 2 | 2 | PASS |
 | TC-53 | Plug-in architecture | A new module ("lowest group rating") is registered without changing the engine; an incomplete module is refused | {"accepted":true,"final":2,"valid":true,"incompleteRefused":true} | {"accepted":true,"final":2,"valid":true,"incompleteRefused":true} | PASS |
 | TC-54 | Effective period | An approved geometric-mean formula set to "start with the next period"; then HR creates the next period | {"whileScheduled":"old formula in use","newPeriod":"new formula","oldVersion":"archived"} | {"whileScheduled":"old formula in use","newPeriod":"new formula","oldVersion":"archived"} | PASS |
-| TC-55 | Reproducible results | Close a period computed with an approved formula; then recompute every stored result with the formula version stored with it | {"keepsFormula":true,"keepsApproval":true,"allSame":true} | {"keepsFormula":true,"keepsApproval":true,"allSame":true} | PASS |
+| TC-59 | Effective dates | An approved formula is only applied to periods starting inside its configured date window | {"before":false,"during":true} | {"before":false,"during":true} | PASS |
+| TC-55 | Reproducible results | Close a period computed with an approved formula; recompute it with its formula and algorithm versions | {"keepsFormula":true,"keepsAlgorithmVersion":true,"keepsApproval":true,"allSame":true} | {"keepsFormula":true,"keepsAlgorithmVersion":true,"keepsApproval":true,"allSame":true} | PASS |
+| TC-60 | HR-configurable evaluator groups | HR adds a Department Head group and assigns it to a staff account; the catalog and membership persist | {"group":true,"membership":true} | {"group":true,"membership":true} | PASS |
+| TC-61 | Evaluator group access control | A student cannot add an evaluator group; HR cannot apply a group to an unknown category | {"student":403,"invalidCategory":400} | {"student":403,"invalidCategory":400} | PASS |
+| TC-62 | Versioned computation modules | A new algorithm version can be registered without changing the prior version used by saved formulas | {"old":3.5,"new":4,"oldAgain":3.5,"duplicateRejected":true} | {"old":3.5,"new":4,"oldAgain":3.5,"duplicateRejected":true} | PASS |
 
 Limits of this report: these are developer-run functional, security and integration tests on simulated data. They do not replace the stakeholder evaluation (ISO/IEC 25010 questionnaire) or confirmation of the rules by HRMC.

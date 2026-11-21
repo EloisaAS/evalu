@@ -4,7 +4,7 @@ import { ROLES, POSITIONS, isTeacher } from './lib/logic';
 import { Icon, Avatar, NavContext, AskHost } from './ui';
 import { HROverview, VpOverview } from './pages/Overview';
 import Tasks from './pages/Tasks';
-import { Periods, Assignments, Forms, Weights, Monitor, Classes, AuditLog } from './pages/HR';
+import { Periods, Assignments, Forms, Monitor, Classes, AuditLog } from './pages/HR';
 import Reports, { DeptResults } from './pages/Reports';
 import Analytics from './pages/Analytics';
 import Policy from './pages/Policy';
@@ -87,8 +87,7 @@ function navFor(user) {
       ['analytics', 'Patterns in results', 'trend', <Analytics />, 'Compare scores and find areas that may need support'],
       ['accounts', 'People & sign-in', 'users', <Accounts />, 'Manage accounts, passwords, and departments'],
       ['forms', 'Evaluation questions', 'form', <Forms />, 'View the questions people answer; changes are usually not needed'],
-      ['weights', 'Scoring percentages', 'scale', <Weights />, 'Change how much each evaluator group counts'],
-      ['formulas', 'Score calculation', 'scale', <Formulas />, 'Change how group scores are combined; VP approval is required'],
+      ['formulas', 'Scoring & calculation', 'scale', <Formulas />, 'Set evaluator percentages and the final-score method in one place'],
       ['policy', 'Evaluation rules', 'form', <Policy />, 'Change participation, rating, and release rules'],
       ['audit', 'Change history', 'lock', <AuditLog />, 'Review a record of important actions and changes'],
     );
@@ -117,7 +116,7 @@ const HR_NAV_SECTIONS = [
   { label: 'Home', keys: ['home'] },
   { label: 'Run an evaluation', keys: ['periods', 'classes', 'assign', 'monitor'] },
   { label: 'Results', keys: ['reports', 'analytics'] },
-  { label: 'System setup', keys: ['accounts', 'forms', 'weights', 'formulas', 'policy'] },
+  { label: 'System setup', keys: ['accounts', 'forms', 'formulas', 'policy'] },
   { label: 'Other', keys: ['audit', 'notifs', 'account'] },
 ];
 

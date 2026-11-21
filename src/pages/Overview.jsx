@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useApp } from '../lib/store';
-import { GROUPS, STAGES, taskStatus, sectionStats, userById, computeAll, canSeeAll, THRESHOLD, hasFinal, pendingApprovals } from '../lib/logic';
+import { STAGES, taskStatus, sectionStats, userById, computeAll, canSeeAll, THRESHOLD, hasFinal, pendingApprovals, groupName } from '../lib/logic';
 import { ApprovalPanel } from './Reports';
 import { Card, Stat, Stats, Meter, Badge, Empty, PeriodPicker, Icon, useNav, fmt, pct, dueText, daysUntil } from '../ui';
 
@@ -85,7 +85,7 @@ export function HROverview() {
                 </div>
                 <div className="meter-row"><span>All evaluators</span><Meter value={pt.length ? pd / pt.length : 0} tone="brand" /><b>{pt.length ? pct(pd / pt.length) : '—'}</b></div>
                 {Object.entries(byGroup).map(([g, v]) => (
-                  <div key={g} className="meter-row sub"><span>{GROUPS[g]}</span><Meter value={v.done / v.n} /><span>{v.done}/{v.n}</span></div>
+                  <div key={g} className="meter-row sub"><span>{groupName(db, g)}</span><Meter value={v.done / v.n} /><span>{v.done}/{v.n}</span></div>
                 ))}
               </div>
             );

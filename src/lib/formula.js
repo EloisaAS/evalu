@@ -31,6 +31,11 @@ export const ROUNDING_METHODS = {
   DOWN: 'Always down (3.469 → 3.46)',
   UP: 'Always up (3.461 → 3.47)',
 };
+const validDate = (value) => {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const timestamp = Date.parse(`${value}T00:00:00Z`);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value;
+};
 
 
 /** Round with the formula's rounding method; immune to binary float noise (3.465 stays 3.465). */
@@ -55,10 +60,12 @@ export function roundBy(x, decimals = 2, method = 'HALF_UP') {
 export function defaultFormula(weights = {}, policy = {}) {
   return {
     name: 'Starting formula', version: 0, method: 'WEIGHTED_AVERAGE',
+    methodVersion: methodOf('WEIGHTED_AVERAGE').version,
     components: Object.entries(weights).map(([group, weight]) => ({ group, weight: weight === '' ? null : weight, aggregation: group === 'ST' ? 'SECTION_AVERAGE' : 'AVERAGE' })),
     expression: '',
     missing: policy.missingGroup === 'incomplete' ? 'INVALIDATE' : 'REWEIGHT',
     minGroups: 1,
+    participation: { percent: policy.participationPercent ?? 50, plusOne: policy.participationPlusOne !== false },
     rounding: { decimals: policy.decimals ?? 2, method: 'HALF_UP' },
   };
 }
@@ -67,8 +74,8 @@ export function defaultFormula(weights = {}, policy = {}) {
 /** Problems that stop a formula from being submitted or used (empty list = valid). */
 export function validateFormula(f, { allowedGroups = null, groupNames = {} } = {}) {
   const errs = [];
-  const m = methodOf(f.method);
-  if (!m) errs.push('Choose a computation method.');
+  const m = methodOf(f.method, f.methodVersion ?? 1);
+  if (!m) errs.push(f.method ? `Computation method "${f.method}" version ${f.methodVersion ?? 1} is not available.` : 'Choose a computation method.');
   const comps = f.components || [];
   if (!comps.length) errs.push('Add at least one evaluator group.');
   const seen = new Set();
@@ -80,6 +87,12 @@ export function validateFormula(f, { allowedGroups = null, groupNames = {} } = {
     if (!has(AGGREGATIONS, c.aggregation)) errs.push(`Choose how ${label}'s evaluators are combined.`);
     if (c.group !== 'ST' && ['SECTION_AVERAGE', 'POOLED'].includes(c.aggregation)) errs.push(`"${AGGREGATIONS[c.aggregation]}" is only for students.`);
     if (m?.usesWeights && !(Number(c.weight) > 0)) errs.push(`${label} needs a weight above 0%.`);
+    if (c.transform?.trim()) {
+      try {
+        const tree = parseExpression(c.transform, ['X']);
+        if (!expressionVars(tree).has('X')) errs.push(`${label}'s score transformation must use x.`);
+      } catch (e) { errs.push(`${label}'s score transformation: ${e.message}`); }
+    }
   }
   if (m?.usesWeights) {
     const total = comps.reduce((a, c) => a + (Number(c.weight) || 0), 0);
@@ -91,6 +104,13 @@ export function validateFormula(f, { allowedGroups = null, groupNames = {} } = {
   const d = Number(f.rounding?.decimals);
   if (!Number.isInteger(d) || d < 0 || d > 4) errs.push('Decimal places must be 0 to 4.');
   if (!has(ROUNDING_METHODS, f.rounding?.method)) errs.push('Choose a rounding method.');
+  if (f.effectiveFrom && !validDate(f.effectiveFrom)) errs.push('Effective-from date must be a valid calendar date.');
+  if (f.effectiveUntil && !validDate(f.effectiveUntil)) errs.push('Effective-until date must be a valid calendar date.');
+  if (f.effectiveFrom && f.effectiveUntil && f.effectiveUntil < f.effectiveFrom) errs.push('Effective-until date must be on or after the effective-from date.');
+  const participation = f.participation || {};
+  const participationPercent = Number(participation.percent);
+  if (!Number.isFinite(participationPercent) || participationPercent < 1 || participationPercent > 100) errs.push('Student participation must be from 1% to 100%.');
+  if (typeof participation.plusOne !== 'boolean') errs.push('Choose whether to require one extra student response.');
   const mg = Number(f.minGroups ?? 1);
   if (!Number.isInteger(mg) || mg < 1 || mg > Math.max(1, comps.length)) errs.push('The minimum number of groups must be between 1 and the number of groups.');
   return errs;
@@ -105,24 +125,38 @@ export function validateFormula(f, { allowedGroups = null, groupNames = {} } = {
  * The shared rules are applied here; the math itself is done by the method's module.
  */
 export function computeFinal(f, scores) {
-  const m = methodOf(f.method);
+  const m = methodOf(f.method, f.methodVersion ?? 1);
   const comps = f.components || [];
   const groups = comps.map((c) => c.group);
-  const missing = groups.filter((g) => scores[g] == null);
-  const have = groups.filter((g) => scores[g] != null);
+  let missing = groups.filter((g) => scores[g] == null);
   const dec = Number(f.rounding?.decimals ?? 2), how = f.rounding?.method || 'HALF_UP';
   const out = (final, status, basis, breakdown, steps, text = '') => ({ final, status, basis, breakdown, missing, steps, how: text });
 
-  if (!m) return out(null, 'incomplete', null, [], [`Unknown computation method "${f.method || 'none'}".`]);
+  if (!m) return out(null, 'incomplete', null, [], [`Computation method "${f.method || 'none'}" version ${f.methodVersion ?? 1} is not available.`]);
   if (m.usesWeights && comps.some((c) => c.weight == null || c.weight === '')) return out(null, 'weights-missing', null, [], ['Some weights are not set.']);
+  const transformed = {};
+  for (const c of comps) {
+    const value = scores[c.group];
+    if (value == null || !c.transform?.trim() || c.transform.trim().toLowerCase() === 'x') {
+      transformed[c.group] = value ?? null;
+      continue;
+    }
+    let result;
+    try { result = evaluate(parseExpression(c.transform, ['X']), { X: value }); }
+    catch (e) { return out(null, 'incomplete', null, [], [`${c.group} score transformation failed: ${e.message}`]); }
+    if (result == null || !Number.isFinite(result)) return out(null, 'incomplete', null, [], [`${c.group} score transformation did not produce a number.`]);
+    transformed[c.group] = result;
+  }
+  missing = groups.filter((g) => transformed[g] == null);
+  const have = groups.filter((g) => transformed[g] != null);
   if (!have.length) return out(null, 'incomplete', null, [], ['No group has a valid result yet.']);
   if (have.length < Number(f.minGroups || 1)) return out(null, 'incomplete', null, [], [`Only ${have.length} group(s) have a result; the formula needs at least ${f.minGroups}.`]);
   if (missing.length && f.missing === 'INVALIDATE') return out(null, 'incomplete', null, [], [`Missing: ${missing.join(', ')}. The formula gives no final rating while a group is missing.`]);
 
   // a missing group: left out (re-weight), counted as 0, or given the others' average
-  const meanHave = have.reduce((a, g) => a + scores[g], 0) / have.length;
-  const val = (g) => (scores[g] != null ? scores[g] : f.missing === 'ZERO' ? 0 : f.missing === 'SUBSTITUTE_MEAN' ? meanHave : null);
-  const usedComps = comps.filter((c) => (f.missing === 'REWEIGHT' ? scores[c.group] != null : true));
+  const meanHave = have.reduce((a, g) => a + transformed[g], 0) / have.length;
+  const val = (g) => (transformed[g] != null ? transformed[g] : f.missing === 'ZERO' ? 0 : f.missing === 'SUBSTITUTE_MEAN' ? meanHave : null);
+  const usedComps = comps.filter((c) => (f.missing === 'REWEIGHT' ? transformed[c.group] != null : true));
   const items = usedComps.map((c) => ({ group: c.group, value: val(c.group), weight: m.usesWeights ? Number(c.weight) : 1 }));
   if (!items.length || items.some((x) => x.value == null)) return out(null, 'incomplete', null, [], ['A group has no rating and the missing-group rule gives it none.']);
   if (m.usesWeights && !items.reduce((a, x) => a + x.weight, 0)) return out(null, 'incomplete', null, [], ['The groups with a result have no weight.']);
@@ -138,7 +172,7 @@ export function computeFinal(f, scores) {
     return { group: c.group, score: scores[c.group], used: it ? it.value : null, weight: m.usesWeights ? Number(c.weight) : null, share: it ? p?.share ?? null : 0, contribution: it ? p?.contribution ?? null : 0 };
   });
   const basis = m.usesWeights ? usedComps.reduce((a, c) => a + Number(c.weight), 0) : null;
-  const steps = [`${m.label}: ${r.how} = ${+r.raw.toFixed(6)}`];
+  const steps = [`${m.label} (algorithm version ${m.version}): ${r.how} = ${+r.raw.toFixed(6)}`];
   if (missing.length) steps.push(`Missing ${missing.join(', ')}: ${MISSING_RULES[f.missing].split(':')[0].toLowerCase()}.`);
   steps.push(`Rounded (${how.toLowerCase().replace('_', ' ')}, ${dec} decimals): ${final}`);
   return out(final, missing.length ? 'reweighted' : 'complete', basis, breakdown, steps, r.how);
@@ -146,7 +180,7 @@ export function computeFinal(f, scores) {
 
 /** The formula as a plain sentence: "Final rating = 40% Students + 40% Dean + 20% Program Chair". */
 export function formulaWords(f, names = {}) {
-  const m = methodOf(f.method);
+  const m = methodOf(f.method, f.methodVersion ?? 1);
   return m ? m.words(f.components || [], (g) => names[g] || g, f) : 'Final rating = …';
 }
 /** How a result was reached, in plain numbers: "40% × 3.50 + 40% × 3.60 + 20% × 3.40 = 3.52". */
@@ -160,6 +194,6 @@ export function howInWords(r) {
 }
 /** The formula in symbols, e.g. "F = 0.40·ST + 0.40·DEAN + 0.20·CHAIR". */
 export function formulaText(f) {
-  const m = methodOf(f.method);
+  const m = methodOf(f.method, f.methodVersion ?? 1);
   return m ? m.symbols(f.components || [], f) : 'F = …';
 }
